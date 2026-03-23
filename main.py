@@ -79,7 +79,7 @@ class NativeTheme:
 # --- 多语言字典 ---
 TRANSLATIONS = {
     'en': {
-        'title': "AI Image Metadata Viewer (Basic) v1.1.0",
+        'title': "AI Image Metadata Viewer (Basic) v1.1.1",
         'open_file': "Open Image",
         'open_folder': "Open Folder",
         'clear': "Clear All",
@@ -111,10 +111,13 @@ TRANSLATIONS = {
         'deleted': "Deleted",
         'sort': "Sort",
         'sort_name': "Name (A → Z)",
-        'sort_mtime': "Modified Time (Newest)",
+        'sort_mtime': "Creation Time (Newest)",
+        'loading': "Loading thumbnails...",
+        'load_done': "Load complete",
+        'refresh': "Refresh folder",
     },
     'cn': {
-        'title': "AI 图片元数据查看器 (基础版) v1.1.0",
+        'title': "AI 图片元数据查看器 (基础版) v1.1.1",
         'open_file': "打开图片",
         'open_folder': "打开文件夹",
         'clear': "清空列表",
@@ -146,10 +149,13 @@ TRANSLATIONS = {
         'deleted': "已删除",
         'sort': "排序",
         'sort_name': "按名称",
-        'sort_mtime': "按修改时间",
+        'sort_mtime': "按创建时间",
+        'loading': "正在加载缩略图...",
+        'load_done': "加载完成",
+        'refresh': "刷新文件夹",
     },
     'tc': {
-        'title': "AI 圖片元數據查看器 (基礎版) v1.1.0",
+        'title': "AI 圖片元數據查看器 (基礎版) v1.1.1",
         'open_file': "打開圖片",
         'open_folder': "打開文件夾",
         'clear': "清空列表",
@@ -181,10 +187,13 @@ TRANSLATIONS = {
         'deleted': "已刪除",
         'sort': "排序",
         'sort_name': "按名稱",
-        'sort_mtime': "按修改時間",
+        'sort_mtime': "按創建時間",
+        'loading': "正在加載縮略圖...",
+        'load_done': "加載完成",
+        'refresh': "刷新文件夾",
     },
     'jp': {
-        'title': "AI 画像メタデータビューア (Basic) v1.1.0",
+        'title': "AI 画像メタデータビューア (Basic) v1.1.1",
         'open_file': "画像を開く",
         'open_folder': "フォルダを開く",
         'clear': "リストをクリア",
@@ -216,10 +225,13 @@ TRANSLATIONS = {
         'deleted': "削除しました",
         'sort': "並び替え",
         'sort_name': "名前順",
-        'sort_mtime': "更新日時（新しい順）",
+        'sort_mtime': "作成日時（新しい順）",
+        'loading': "サムネイルを読み込み中...",
+        'load_done': "読み込み完了",
+        'refresh': "フォルダを更新",
     },
     'kr': {
-        'title': "AI 이미지 메타데이터 뷰어 (Basic) v1.1.0",
+        'title': "AI 이미지 메타데이터 뷰어 (Basic) v1.1.1",
         'open_file': "이미지 열기",
         'open_folder': "폴더 열기",
         'clear': "목록 지우기",
@@ -251,7 +263,10 @@ TRANSLATIONS = {
         'deleted': "삭제됨",
         'sort': "정렬",
         'sort_name': "이름순",
-        'sort_mtime': "수정 시간(최신순)",
+        'sort_mtime': "생성 시간(최신순)",
+        'loading': "썸네일 로딩 중...",
+        'load_done': "로딩 완료",
+        'refresh': "폴더 새로고침",
     }
 }
 
@@ -288,7 +303,7 @@ def create_emoji_icon(emoji_char, size=64, color: str | None = None):
     return QIcon(pixmap)
 
 
-def pil2pixmap(pil_image):
+def pil2qimage(pil_image):
     if pil_image.mode == "RGB":
         pil_image = pil_image.convert("RGBA")
     elif pil_image.mode == "L":
@@ -299,11 +314,11 @@ def pil2pixmap(pil_image):
     im_rgba = Image.merge("RGBA", (r, g, b, a))
     data = im_rgba.tobytes("raw", "RGBA")
     qim = QImage(data, im_rgba.size[0], im_rgba.size[1], QImage.Format.Format_RGBA8888)
-    return QPixmap.fromImage(qim)
+    return qim.copy()
 
 
 class ThumbnailLoader(QThread):
-    thumbnail_loaded = pyqtSignal(str, QPixmap)
+    thumbnail_loaded = pyqtSignal(str, QImage)
 
     def __init__(self, file_list):
         super().__init__()
@@ -317,7 +332,7 @@ class ThumbnailLoader(QThread):
             try:
                 with Image.open(full_path) as img:
                     img.thumbnail((240, 240), Image.Resampling.LANCZOS)
-                    self.thumbnail_loaded.emit(full_path, pil2pixmap(img))
+                    self.thumbnail_loaded.emit(full_path, pil2qimage(img))
             except:
                 continue
 
@@ -370,14 +385,25 @@ class MainWindow(QMainWindow):
         self.dark_mode = self.settings.value("theme", False, type=bool)
         self.sort_mode = self.settings.value("sort_mode", "name_natural", type=str)
 
-        self.setWindowTitle("AI Image Viewer Basic v1.1.0")
-        self.resize(1300, 850)
+        self.setWindowTitle("AI Image Viewer Basic v1.1.1")
+        
+        # 设置合理的默认尺寸并居中显示
+        screen_geo = QApplication.primaryScreen().availableGeometry()
+        w = int(screen_geo.width() * 0.6)
+        h = int(screen_geo.height() * 0.7)
+        w = max(1000, min(w, 1400))
+        h = max(700, min(h, 900))
+        self.resize(w, h)
+        
+        x = screen_geo.x() + (screen_geo.width() - w) // 2
+        y = screen_geo.y() + (screen_geo.height() - h) // 2
+        self.move(x, y)
         self.setAcceptDrops(True)
 
         self.loader_thread = None
-        self.current_image_path = None
         self.current_file_list = []
         self.current_index = -1
+        self.current_loaded_folder = None
         self.current_pos_text = ""
         self.current_neg_text = ""
         self.last_html = ""
@@ -421,8 +447,11 @@ class MainWindow(QMainWindow):
             }}
         """)
         self.toast_label.hide()
+        self.toast_timer = QTimer(self)
+        self.toast_timer.setSingleShot(True)
+        self.toast_timer.timeout.connect(self.toast_label.hide)
 
-    def show_toast(self, message):
+    def show_toast(self, message, duration=2000):
         self.toast_label.setText(message)
         self.toast_label.adjustSize()
         x = (self.width() - self.toast_label.width()) // 2
@@ -430,11 +459,22 @@ class MainWindow(QMainWindow):
         self.toast_label.move(x, y)
         self.toast_label.show()
         self.toast_label.raise_()
-        QTimer.singleShot(2000, self.toast_label.hide)
+        
+        self.toast_timer.stop()
+        if duration > 0:
+            self.toast_timer.start(duration)
 
     # ---------- i18n ----------
     def tr(self, key):
         return TRANSLATIONS[self.lang].get(key, key)
+
+    # ---------- Action States ----------
+    def update_action_states(self):
+        has_images = len(self.current_file_list) > 0
+        if hasattr(self, 'action_delete'):
+            self.action_delete.setEnabled(has_images)
+        if hasattr(self, 'action_clear'):
+            self.action_clear.setEnabled(has_images)
 
     # ---------- Toolbar ----------
     def setup_toolbar(self):
@@ -517,6 +557,7 @@ class MainWindow(QMainWindow):
         self.action_clear.setIcon(create_emoji_icon("🧹", color="#ff4d4f"))
         self.action_clear.triggered.connect(self.clear_all)
         self.toolbar.addAction(self.action_clear)
+        self.update_action_states()
 
     # ---------- Grid View ----------
     def setup_grid_view(self):
@@ -556,14 +597,41 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(self.grid_page)
 
         # 悬浮排序按钮
-        self.sort_fab = QToolButton(self.grid_page)
+# FAB Container
+        self.fab_container = QFrame(self.grid_page)
+        self.fab_container.setObjectName("fab_container")
+        self.fab_layout = QVBoxLayout(self.fab_container)
+        self.fab_layout.setContentsMargins(4, 4, 4, 4)
+        self.fab_layout.setSpacing(4)
+
+        self.sort_fab = QToolButton(self.fab_container)
         self.sort_fab.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.sort_fab.setText("")
         self.sort_fab.setToolTip(self.tr('sort'))
-        self.sort_fab.setFixedSize(36, 36)
-        self.sort_fab.setIconSize(QSize(18, 18))
+        self.sort_fab.setFixedSize(32, 32)
         self.sort_fab.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sort_fab.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.sort_fab.setObjectName("sort_fab")
+        self.sort_fab.setObjectName("fab_btn")
+
+        self.refresh_fab = QToolButton(self.fab_container)
+        self.refresh_fab.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.refresh_fab.setText("")
+        self.refresh_fab.setToolTip(self.tr('refresh'))
+        self.refresh_fab.setFixedSize(32, 32)
+        self.refresh_fab.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.refresh_fab.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.refresh_fab.setObjectName("fab_btn")
+        self.refresh_fab.clicked.connect(self.refresh_folder)
+
+        self.fab_layout.addWidget(self.sort_fab)
+        
+        self.fab_separator = QFrame()
+        self.fab_separator.setFixedHeight(1)
+        self.fab_separator.setObjectName("fab_separator")
+        self.fab_layout.addWidget(self.fab_separator)
+
+        self.fab_layout.addWidget(self.refresh_fab)
+        self.fab_container.hide()
 
         self.sort_menu = QMenu(self)
         self.sort_group = QActionGroup(self)
@@ -591,8 +659,6 @@ class MainWindow(QMainWindow):
         # 绑定点击事件，改为自定义弹出位置
         self.sort_fab.clicked.connect(self.show_sort_menu)
         # 小切换动画：按下时图标缩小，松开后假恢复
-        self.sort_fab.pressed.connect(lambda: self.sort_fab.setIconSize(QSize(13, 13)))
-        self.sort_fab.released.connect(lambda: QTimer.singleShot(0, lambda: self.sort_fab.setIconSize(QSize(18, 18))))
         self.sort_fab.hide()
 
         # 初次显示时，延迟调整一次
@@ -827,6 +893,7 @@ class MainWindow(QMainWindow):
             self.show_toast(self.tr('delete_error'))
         else:
             self.show_toast(self.tr('deleted'))
+        self.update_action_states()
 
     # ---------- 清空全部 ----------
     def clear_all(self):
@@ -840,7 +907,6 @@ class MainWindow(QMainWindow):
         # 清空状态
         self.current_file_list = []
         self.current_index = -1
-        self.current_image_path = None
         self.last_html = ""
         self.current_pos_text = ""
         self.current_neg_text = ""
@@ -852,8 +918,7 @@ class MainWindow(QMainWindow):
         self.list_widget.hide()
         self.hint_label.show()
         
-        if hasattr(self, "sort_fab"):
-            self.sort_fab.hide()
+        self.update_fab_visibility()
         
         self.image_label.clear()
         self.info_text.clear()
@@ -866,6 +931,7 @@ class MainWindow(QMainWindow):
 
         # 提示
         self.show_toast(self.tr('cleared'))
+        self.update_action_states()
 
     # ---------- 多语言 / UI 文本 ----------
     def set_language(self, lang_code):
@@ -884,6 +950,8 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, 'sort_fab'):
             self.sort_fab.setToolTip(self.tr('sort'))
+            if hasattr(self, 'refresh_fab'):
+                self.refresh_fab.setToolTip(self.tr('refresh'))
             self.sort_name_action.setText(self.tr('sort_name'))
             self.sort_mtime_action.setText(self.tr('sort_mtime'))
 
@@ -946,6 +1014,7 @@ class MainWindow(QMainWindow):
                 self.load_from_folder_path(os.path.dirname(p))
                 self.show_image_detail(p)
             else:
+                self.current_loaded_folder = None
                 self.load_images_list(dropped_files)
                 if self.current_file_list:
                     self.show_image_detail(self.current_file_list[0])
@@ -967,6 +1036,7 @@ class MainWindow(QMainWindow):
             self.load_from_folder_path(os.path.dirname(target))
             self.show_image_detail(target)
         else:
+            self.current_loaded_folder = None
             self.load_images_list(files)
             self.show_image_detail(files[0])
 
@@ -975,24 +1045,65 @@ class MainWindow(QMainWindow):
         if folder:
             self.load_from_folder_path(folder)
 
+    def update_fab_visibility(self):
+        if not hasattr(self, "fab_container"): return
+        if self.stacked_widget.currentIndex() == 0 and len(self.current_file_list) > 0:
+            self.fab_container.show()
+            self.sort_fab.show()
+            if getattr(self, "current_loaded_folder", None):
+                self.refresh_fab.show()
+                self.fab_separator.show()
+            else:
+                self.refresh_fab.hide()
+                self.fab_separator.hide()
+            self.fab_container.adjustSize()
+            self.position_sort_fab()
+        else:
+            self.fab_container.hide()
+
     def position_sort_fab(self):
-        if not hasattr(self, "sort_fab"): return
+        if not hasattr(self, "fab_container"): return
         if self.stacked_widget.currentIndex() != 0: return
 
         rect = self.list_widget.geometry()
         sb = self.list_widget.verticalScrollBar()
         sb_w = sb.sizeHint().width() if sb and sb.isVisible() else 0
 
+        self.fab_container.adjustSize()
         margin = 16
-        x = rect.x() + rect.width() - sb_w - self.sort_fab.width() - margin
+        x = rect.x() + rect.width() - sb_w - self.fab_container.width() - margin
         x -= 4 # Small extra offset
         y = rect.y() + margin
         
         x = max(0, x)
         y = max(0, y)
 
-        self.sort_fab.move(x, y)
+        self.fab_container.move(x, y)
 
+
+    def refresh_folder(self):
+        if getattr(self, "current_loaded_folder", None) and os.path.isdir(self.current_loaded_folder):
+            selected_paths = [it.data(Qt.ItemDataRole.UserRole) for it in self.list_widget.selectedItems()]
+            cur_item = self.list_widget.currentItem()
+            current_path = cur_item.data(Qt.ItemDataRole.UserRole) if cur_item else None
+
+            self.load_from_folder_path(self.current_loaded_folder)
+
+            def restore_selection():
+                first_found = False
+                for idx, p in enumerate(self.current_file_list):
+                    if p in selected_paths:
+                        item = self.list_widget.item(idx)
+                        if item:
+                            item.setSelected(True)
+                            if not first_found:
+                                self.list_widget.scrollToItem(item)
+                                first_found = True
+                    if p == current_path:
+                        item = self.list_widget.item(idx)
+                        if item:
+                            self.list_widget.setCurrentItem(item)
+            QTimer.singleShot(200, restore_selection)
     def set_sort_mode(self, mode):
         if mode not in ("name_natural", "mtime"): return
         if self.sort_mode == mode: return
@@ -1023,7 +1134,9 @@ class MainWindow(QMainWindow):
 
         self.loader_thread = ThumbnailLoader(self.current_file_list)
         self.loader_thread.thumbnail_loaded.connect(self.add_thumbnail_item)
+        self.loader_thread.finished.connect(self.on_thumbnails_load_finished)
         self.loader_thread.start()
+        self.show_toast(self.tr('loading'), duration=0)
 
         if selected_path and selected_path in self.current_file_list:
             idx = self.current_file_list.index(selected_path)
@@ -1067,13 +1180,14 @@ class MainWindow(QMainWindow):
             for f in os.listdir(folder_path)
             if f.lower().endswith(VALID_EXTENSIONS)
         ]
+        self.current_loaded_folder = os.path.normpath(folder_path)
         self.load_images_list(files)
     def apply_sort(self, files):
         if not files:
             return []
         if self.sort_mode == "mtime":
             def safe_mtime(p):
-                try: return os.path.getmtime(p)
+                try: return os.path.getctime(p)
                 except: return 0
             return sorted(files, key=safe_mtime, reverse=True)
         else: # "name_natural"
@@ -1100,25 +1214,47 @@ class MainWindow(QMainWindow):
         self.hint_label.hide()
         self.list_widget.show()
 
-        if hasattr(self, "sort_fab"):
-            if len(self.current_file_list) > 0 and self.stacked_widget.currentIndex() == 0:
-                self.sort_fab.show()
-            else:
-                self.sort_fab.hide()
+        self.update_fab_visibility()
 
         if self.loader_thread and self.loader_thread.isRunning():
             self.loader_thread.stop()
 
         self.loader_thread = ThumbnailLoader(self.current_file_list)
         self.loader_thread.thumbnail_loaded.connect(self.add_thumbnail_item)
+        self.loader_thread.finished.connect(self.on_thumbnails_load_finished)
         self.loader_thread.start()
+        self.show_toast(self.tr('loading'), duration=0)
+        
         self.show_grid()
-        self.sort_fab.setVisible(len(self.current_file_list) > 0)
+        self.update_fab_visibility()
+        self.update_action_states()
 
         # 加载新列表后，根据当前宽度再适配一次
         QTimer.singleShot(0, self.update_grid_for_width)
 
-    def add_thumbnail_item(self, path, pixmap):
+    def on_thumbnails_load_finished(self):
+        if getattr(self, "loader_thread", None) and getattr(self.loader_thread, "is_interrupted", getattr(self.loader_thread, "is_stopped", False)):
+            return
+
+        if self.stacked_widget.currentIndex() == 0:
+            self.show_toast(self.tr('load_done'), duration=2000)
+            if hasattr(self, "current_image_path") and self.current_image_path and self.current_image_path in self.current_file_list:
+                idx = self.current_file_list.index(self.current_image_path)
+                if 0 <= idx < self.list_widget.count():
+                    item = self.list_widget.item(idx)
+                    self.list_widget.setCurrentItem(item)
+                    from PyQt6.QtCore import QTimer
+                    from PyQt6.QtWidgets import QAbstractItemView
+                    QTimer.singleShot(50, lambda: self.list_widget.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible))
+        else:
+            self.toast_label.hide()
+
+    def add_thumbnail_item(self, path, qimage):
+        if self.sender() != getattr(self, 'loader_thread', None):
+            return
+            
+        pixmap = QPixmap.fromImage(qimage)
+
         filename = os.path.basename(path)
 
         # 极端长文件名截断
@@ -1144,14 +1280,15 @@ class MainWindow(QMainWindow):
         if not path or not os.path.exists(path):
             return
             
-        if hasattr(self, 'sort_fab'):
-            self.sort_fab.hide()
+        if hasattr(self, 'fab_container'):
+            self.fab_container.hide()
         path = os.path.normpath(path)
         self.current_image_path = path
         if not keep_view:
             self.image_label.clear()
 
         self.stacked_widget.setCurrentIndex(1)
+        self.toast_label.hide()
         self.back_action.setEnabled(True)
         QApplication.processEvents()
 
@@ -1189,7 +1326,7 @@ class MainWindow(QMainWindow):
             target_h = int((view_h - 40) * dpr)
             
             with Image.open(path) as img:
-                pixmap = pil2pixmap(img)
+                pixmap = QPixmap.fromImage(pil2qimage(img))
                 # Scale to physical pixels
                 scaled = pixmap.scaled(
                     target_w,
@@ -1206,30 +1343,33 @@ class MainWindow(QMainWindow):
 
     # ---------- 回到网格 ----------
     def show_grid(self):
-        self.current_image_path = None
         self.image_label.clear()
         self.stacked_widget.setCurrentIndex(0)
         self.back_action.setEnabled(False)
 
-        # 回到网格时禁用左右方向键快捷键
+        if getattr(self, 'loader_thread', None) and self.loader_thread.isRunning():
+            self.show_toast(self.tr('loading'), duration=0)
+
+        # 回回到列表时禁用左右翻页键
         self.shortcut_prev.setEnabled(False)
         self.shortcut_next.setEnabled(False)
 
+        if hasattr(self, "current_image_path") and self.current_image_path in self.current_file_list:
+            self.current_index = self.current_file_list.index(self.current_image_path)
+            
         if 0 <= self.current_index < self.list_widget.count():
             item = self.list_widget.item(self.current_index)
             self.list_widget.setCurrentItem(item)
-            self.list_widget.scrollToItem(item)
+            from PyQt6.QtCore import QTimer
+            from PyQt6.QtWidgets import QAbstractItemView
+            QTimer.singleShot(50, lambda: self.list_widget.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible))
             
+        from PyQt6.QtCore import QTimer
         QTimer.singleShot(0, self.update_grid_for_width)
 
     # ---------- 自适应网格尺寸 ----------
     def update_grid_for_width(self):
-        if hasattr(self, "sort_fab"):
-            if self.stacked_widget.currentIndex() == 0 and len(self.current_file_list) > 0:
-                self.sort_fab.show()
-                self.position_sort_fab()
-            else:
-                self.sort_fab.hide()
+        self.update_fab_visibility()
 
         if not hasattr(self, "list_widget"):
             return
@@ -1694,31 +1834,48 @@ class MainWindow(QMainWindow):
         self.apply_fab_style()
 
     def apply_fab_style(self):
-        if not hasattr(self, 'sort_fab'): return
+        if not hasattr(self, 'fab_container'): return
         t = self.get_theme()
         
         icon_color = "#F5F6F8" if self.dark_mode else "#111111"
         self.sort_fab.setIcon(create_glyph_icon("⇅", icon_color, size=72))
         self.sort_fab.setToolTip(self.tr('sort'))
         
-        self.sort_fab.setStyleSheet(f"""
-            QToolButton#sort_fab {{
+        self.refresh_fab.setIcon(create_glyph_icon("↻", icon_color, size=72))
+        self.refresh_fab.setToolTip(self.tr('refresh'))
+        
+        # Style the container as a pill
+        self.fab_container.setStyleSheet(f"""
+            QFrame#fab_container {{
                 background-color: {t['bg_panel']};
                 border: 1px solid {t['border']};
-                border-radius: 12px;
-                color: {t['text_main']};
-            }}
-            QToolButton#sort_fab:hover {{
-                background-color: {t['hover']};
-            }}
-            QToolButton#sort_fab:pressed {{
-                background-color: {t['hover']};
-            }}
-            QToolButton#sort_fab::menu-indicator {{
-                image: none;
+                border-radius: 18px;
             }}
         """)
+        
+        # Style the buttons
+        btn_style = f"""
+            QToolButton#fab_btn {{
+                background-color: transparent;
+                border: none;
+                border-radius: 14px;
+                color: {t['text_main']};
+            }}
+            QToolButton#fab_btn:hover {{
+                background-color: {t['hover']};
+            }}
+            QToolButton#fab_btn:pressed {{
+                background-color: {t['hover']};
+            }}
+            QToolButton#fab_btn::menu-indicator {{
+                image: none;
+            }}
+        """
+        self.sort_fab.setStyleSheet(btn_style)
+        self.refresh_fab.setStyleSheet(btn_style)
 
+        if hasattr(self, 'fab_separator'):
+            self.fab_separator.setStyleSheet(f"background-color: {t['border']};")
 
 if __name__ == "__main__":
     from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
