@@ -25,9 +25,7 @@ Runs fully offline. No telemetry. No internet connection required.
 
 ## Download
 
-Prebuilt Windows executable is available on the Releases page:
-
-https://github.com/sinanli1994/ai-image-metadata-viewer/releases
+Prebuilt Windows executable is available on the [Releases](https://github.com/sinanli1994/ai-image-metadata-viewer/releases) page.
 
 ---
 
@@ -37,10 +35,13 @@ https://github.com/sinanli1994/ai-image-metadata-viewer/releases
 - Supports Stable Diffusion and ComfyUI images
 - Grid thumbnail browsing
 - Folder browsing support
+- Folder refresh support
 - Drag & drop images or folders
-- Floating sort menu (Name / Modified Time)
+- Floating action menu for sort and refresh
+- Sorting options: Name / Creation Time
 - Keyboard navigation (Arrow keys / Enter / Delete)
 - Safe delete (moves images to system Recycle Bin)
+- Thumbnail loading status feedback
 
 ### Interface
 
@@ -52,6 +53,7 @@ https://github.com/sinanli1994/ai-image-metadata-viewer/releases
   - Japanese
   - Korean
 - Remembers language and theme settings
+- Improved startup window sizing and centered launch
 
 ### Privacy
 
@@ -94,12 +96,30 @@ python main.py
 To create a standalone Windows executable:
 
 ```bash
-pyinstaller --noconsole --onefile --icon=app.ico --add-data "app.ico;." --version-file=version.txt --name=AI_Image_Metadata_Viewer
+pyinstaller --noconsole --onefile --icon=app.ico --add-data "app.ico;." --version-file=version.txt --name=AI_ImageViewer_Basic main.py
 ```
 
 ---
 
 ## Version
+
+### v1.1.1
+
+Quality-of-life update.
+
+New:
+- Added folder refresh support
+- Added loading status feedback for thumbnail generation
+- Added load-complete feedback after thumbnail loading
+
+Improvements:
+- Updated floating action menu with sort and refresh actions
+- Updated sorting from Modified Time to Creation Time
+- Improved window startup behavior and centered launch
+- Improved overall UI polish and state handling
+- Improved thumbnail loading and selection restore behavior
+
+---
 
 ### v1.1.0
 
