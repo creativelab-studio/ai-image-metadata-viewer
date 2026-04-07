@@ -37,10 +37,12 @@ Prebuilt Windows executable is available on the [Releases](https://github.com/si
 - Folder browsing support
 - Folder refresh support
 - Drag & drop images or folders
+- Centered drag-and-drop start view with quick open actions
 - Floating action menu for sort and refresh
 - Sorting options: Name / Creation Time
 - Keyboard navigation (Arrow keys / Enter / Delete)
 - Safe delete (moves images to system Recycle Bin)
+- Custom delete confirmation dialog with default confirm action and optional "Don't ask again"
 - Thumbnail loading status feedback
 - Card-based metadata detail panel
 - Structured summary for filename, resolution, and current image position
@@ -108,6 +110,21 @@ pyinstaller --noconsole --onefile --icon=app.ico --add-data "app.ico;." --versio
 ---
 
 ## Version
+
+### v1.2.1
+
+Minor UX refinement update.
+
+New:
+- Added a custom delete confirmation dialog styled to match the application UI
+- Added a "Don't ask again" option for delete confirmation
+
+Improvements:
+- Set Delete as the default confirmation action for faster keyboard workflow
+- Refined delete dialog layout, spacing, colors, and button proportions
+- Continued UI polish and quality-of-life refinements
+
+---
 
 ### v1.2.0
 
