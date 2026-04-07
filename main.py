@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QSplitter, QFileDialog,
     QStackedWidget, QScrollArea, QToolBar, QMessageBox,
     QFrame, QPushButton, QSizePolicy, QAbstractItemView,
-    QToolButton, QMenu, QGridLayout
+    QToolButton, QMenu, QGridLayout, QDialog, QCheckBox
 )
 from PyQt6.QtCore import QPoint
 from PyQt6.QtGui import (
@@ -80,7 +80,7 @@ class NativeTheme:
 # --- 多语言字典 ---
 TRANSLATIONS = {
     'en': {
-        'title': "AI Image Metadata Viewer (Basic) v1.2.0",
+        'title': "AI Image Metadata Viewer (Basic) v1.2.1",
         'open_file': "Open Image",
         'open_folder': "Open Folder",
         'clear': "Clear All",
@@ -104,6 +104,8 @@ TRANSLATIONS = {
         'delete': "Delete",
         'delete_confirm_title': "Delete Image",
         'delete_confirm_one': "Delete this image from disk?\n{0}",
+        'delete_confirm_skip': "Don't ask again",
+        'cancel': "Cancel",
         'delete_error': "Failed to delete some files.",
         'deleted': "Deleted",
         'sort': "Sort",
@@ -114,7 +116,7 @@ TRANSLATIONS = {
         'refresh': "Refresh folder",
     },
     'cn': {
-        'title': "AI \u56fe\u7247\u5143\u6570\u636e\u67e5\u770b\u5668 (\u57fa\u7840\u7248) v1.2.0",
+        'title': "AI \u56fe\u7247\u5143\u6570\u636e\u67e5\u770b\u5668 (\u57fa\u7840\u7248) v1.2.1",
         'open_file': "\u6253\u5f00\u56fe\u7247",
         'open_folder': "\u6253\u5f00\u6587\u4ef6\u5939",
         'clear': "\u6e05\u7a7a\u5217\u8868",
@@ -138,6 +140,8 @@ TRANSLATIONS = {
         'delete': "\u5220\u9664",
         'delete_confirm_title': "\u5220\u9664\u56fe\u7247",
         'delete_confirm_one': "\u8981\u4ece\u78c1\u76d8\u5220\u9664\u8fd9\u5f20\u56fe\u7247\u5417\uff1f\n{0}",
+        'delete_confirm_skip': "\u4e0d\u518d\u663e\u793a",
+        'cancel': "\u53d6\u6d88",
         'delete_error': "\u5220\u9664\u90e8\u5206\u6587\u4ef6\u5931\u8d25\u3002",
         'deleted': "\u5df2\u5220\u9664",
         'sort': "\u6392\u5e8f",
@@ -148,7 +152,7 @@ TRANSLATIONS = {
         'refresh': "\u5237\u65b0\u6587\u4ef6\u5939",
     },
     'tc': {
-        'title': "AI \u5716\u7247\u5143\u6578\u64da\u67e5\u770b\u5668 (\u57fa\u790e\u7248) v1.2.0",
+        'title': "AI \u5716\u7247\u5143\u6578\u64da\u67e5\u770b\u5668 (\u57fa\u790e\u7248) v1.2.1",
         'open_file': "\u6253\u958b\u5716\u7247",
         'open_folder': "\u6253\u958b\u8cc7\u6599\u593e",
         'clear': "\u6e05\u7a7a\u5217\u8868",
@@ -172,6 +176,8 @@ TRANSLATIONS = {
         'delete': "\u522a\u9664",
         'delete_confirm_title': "\u522a\u9664\u5716\u7247",
         'delete_confirm_one': "\u8981\u5f9e\u78c1\u789f\u522a\u9664\u9019\u5f35\u5716\u7247\u55ce\uff1f\n{0}",
+        'delete_confirm_skip': "\u4e0d\u518d\u986f\u793a",
+        'cancel': "\u53d6\u6d88",
         'delete_error': "\u522a\u9664\u90e8\u5206\u6a94\u6848\u5931\u6557\u3002",
         'deleted': "\u5df2\u522a\u9664",
         'sort': "\u6392\u5e8f",
@@ -182,7 +188,7 @@ TRANSLATIONS = {
         'refresh': "\u91cd\u65b0\u6574\u7406\u8cc7\u6599\u593e",
     },
     'jp': {
-        'title': "AI \u753b\u50cf\u30e1\u30bf\u30c7\u30fc\u30bf\u30d3\u30e5\u30fc\u30a2 (Basic) v1.2.0",
+        'title': "AI \u753b\u50cf\u30e1\u30bf\u30c7\u30fc\u30bf\u30d3\u30e5\u30fc\u30a2 (Basic) v1.2.1",
         'open_file': "\u753b\u50cf\u3092\u958b\u304f",
         'open_folder': "\u30d5\u30a9\u30eb\u30c0\u3092\u958b\u304f",
         'clear': "\u30ea\u30b9\u30c8\u3092\u30af\u30ea\u30a2",
@@ -206,6 +212,8 @@ TRANSLATIONS = {
         'delete': "\u524a\u9664",
         'delete_confirm_title': "\u753b\u50cf\u306e\u524a\u9664",
         'delete_confirm_one': "\u3053\u306e\u753b\u50cf\u3092\u30c7\u30a3\u30b9\u30af\u304b\u3089\u524a\u9664\u3057\u307e\u3059\u304b\uff1f\n{0}",
+        'delete_confirm_skip': "\u4eca\u5f8c\u306f\u8868\u793a\u3057\u306a\u3044",
+        'cancel': "\u30ad\u30e3\u30f3\u30bb\u30eb",
         'delete_error': "\u4e00\u90e8\u306e\u30d5\u30a1\u30a4\u30eb\u524a\u9664\u306b\u5931\u6557\u3057\u307e\u3057\u305f\u3002",
         'deleted': "\u524a\u9664\u3057\u307e\u3057\u305f",
         'sort': "\u4e26\u3073\u66ff\u3048",
@@ -216,7 +224,7 @@ TRANSLATIONS = {
         'refresh': "\u30d5\u30a9\u30eb\u30c0\u3092\u66f4\u65b0",
     },
     'kr': {
-        'title': "AI \uc774\ubbf8\uc9c0 \uba54\ud0c0\ub370\uc774\ud130 \ubdf0\uc5b4 (Basic) v1.2.0",
+        'title': "AI \uc774\ubbf8\uc9c0 \uba54\ud0c0\ub370\uc774\ud130 \ubdf0\uc5b4 (Basic) v1.2.1",
         'open_file': "\uc774\ubbf8\uc9c0 \uc5f4\uae30",
         'open_folder': "\ud3f4\ub354 \uc5f4\uae30",
         'clear': "\ubaa9\ub85d \uc9c0\uc6b0\uae30",
@@ -240,6 +248,8 @@ TRANSLATIONS = {
         'delete': "\uc0ad\uc81c",
         'delete_confirm_title': "\uc774\ubbf8\uc9c0 \uc0ad\uc81c",
         'delete_confirm_one': "\uc774 \uc774\ubbf8\uc9c0\ub97c \ub514\uc2a4\ud06c\uc5d0\uc11c \uc0ad\uc81c\ud560\uae4c\uc694?\n{0}",
+        'delete_confirm_skip': "\ub2e4\uc2dc \ubcf4\uc9c0 \uc54a\uae30",
+        'cancel': "\ucde8\uc18c",
         'delete_error': "\uc77c\ubd80 \ud30c\uc77c \uc0ad\uc81c\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.",
         'deleted': "\uc0ad\uc81c\ub428",
         'sort': "\uc815\ub82c",
@@ -384,6 +394,154 @@ class ImageScrollArea(QScrollArea):
             event.accept()
         else:
             super().wheelEvent(event)
+
+
+class DeleteConfirmDialog(QDialog):
+    def __init__(self, tr_func, theme, dark_mode: bool, title: str, message: str, action_text: str, parent=None):
+        super().__init__(parent)
+        self.tr = tr_func
+        self.setModal(True)
+        self.setWindowTitle(title)
+        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        self.setObjectName("delete_confirm_dialog")
+        self.setMinimumWidth(360)
+        self.setMaximumWidth(420)
+
+        panel_bg = theme['bg_panel']
+        card_bg = '#242a32' if dark_mode else '#fcfaf5'
+        border = theme['border']
+        text_main = theme['text_main']
+        text_sub = theme['text_sub']
+        accent = theme['accent']
+        hover = theme['hover']
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(18, 16, 18, 16)
+        root.setSpacing(12)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(10)
+
+        icon = QLabel("🗑", self)
+        icon.setObjectName("delete_confirm_icon")
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setFixedSize(40, 40)
+        top.addWidget(icon, 0, Qt.AlignmentFlag.AlignTop)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(4)
+
+        title_label = QLabel(title, self)
+        title_label.setObjectName("delete_confirm_title")
+        text_col.addWidget(title_label)
+
+        message_label = QLabel(message, self)
+        message_label.setObjectName("delete_confirm_message")
+        message_label.setWordWrap(True)
+        message_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        text_col.addWidget(message_label)
+        top.addLayout(text_col, 1)
+        root.addLayout(top)
+
+        self.skip_checkbox = QCheckBox(tr_func('delete_confirm_skip'), self)
+        self.skip_checkbox.setObjectName("delete_confirm_skip")
+        root.addWidget(self.skip_checkbox)
+
+        buttons = QHBoxLayout()
+        buttons.setContentsMargins(0, 2, 0, 0)
+        buttons.setSpacing(10)
+
+        self.cancel_btn = QPushButton(tr_func('cancel'), self)
+        self.cancel_btn.setObjectName("delete_confirm_cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        self.cancel_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        buttons.addWidget(self.cancel_btn)
+
+        self.confirm_btn = QPushButton(action_text, self)
+        self.confirm_btn.setObjectName("delete_confirm_yes")
+        self.confirm_btn.clicked.connect(self.accept)
+        self.confirm_btn.setDefault(True)
+        self.confirm_btn.setAutoDefault(True)
+        self.confirm_btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        buttons.addWidget(self.confirm_btn)
+        root.addLayout(buttons)
+
+        self.setStyleSheet(f"""
+            QDialog#delete_confirm_dialog {{
+                background-color: {panel_bg};
+                border: 1px solid {border};
+                border-radius: 18px;
+            }}
+            QDialog#delete_confirm_dialog QLabel,
+            QDialog#delete_confirm_dialog QCheckBox {{
+                color: {text_main};
+                background: transparent;
+            }}
+            QLabel#delete_confirm_icon {{
+                background-color: {card_bg};
+                border: 1px solid {border};
+                border-radius: 12px;
+                color: {accent};
+                font-size: 20px;
+            }}
+            QLabel#delete_confirm_title {{
+                color: {text_main};
+                font-size: 16px;
+                font-weight: 700;
+            }}
+            QLabel#delete_confirm_message {{
+                color: {text_main};
+                font-size: 13px;
+                line-height: 1.4;
+            }}
+            QCheckBox#delete_confirm_skip {{
+                color: {text_main};
+                font-size: 12px;
+                spacing: 8px;
+            }}
+            QCheckBox#delete_confirm_skip::indicator {{
+                width: 16px;
+                height: 16px;
+                border-radius: 5px;
+                border: 1px solid {border};
+                background-color: {card_bg};
+            }}
+            QCheckBox#delete_confirm_skip::indicator:checked {{
+                background-color: {accent};
+                border: 1px solid {accent};
+            }}
+            QPushButton#delete_confirm_cancel,
+            QPushButton#delete_confirm_yes {{
+                min-width: 120px;
+                min-height: 30px;
+                padding: 4px 14px;
+                border-radius: 12px;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QPushButton#delete_confirm_cancel {{
+                background-color: {card_bg};
+                color: {text_main};
+                border: 1px solid {border};
+            }}
+            QPushButton#delete_confirm_cancel:hover {{
+                background-color: {hover};
+            }}
+            QPushButton#delete_confirm_yes {{
+                background-color: {accent};
+                color: white;
+                border: 1px solid {accent};
+            }}
+            QPushButton#delete_confirm_yes:hover {{
+                background-color: {accent};
+                border: 1px solid {accent};
+            }}
+        """)
+
+    def skip_future(self):
+        return self.skip_checkbox.isChecked()
 
 
 class PromptTextBox(QFrame):
@@ -1018,7 +1176,7 @@ class MainWindow(QMainWindow):
         self.dark_mode = self.settings.value("theme", True, type=bool)
         self.sort_mode = self.settings.value("sort_mode", "name_natural", type=str)
 
-        self.setWindowTitle("AI Image Metadata Viewer (Basic) v1.2.0")
+        self.setWindowTitle("AI Image Metadata Viewer (Basic) v1.2.1")
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
@@ -1538,13 +1696,8 @@ class MainWindow(QMainWindow):
         if not target_path:
             return
 
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Icon.Warning)
-        msg.setWindowTitle(self.tr('delete_confirm_title'))
-        msg.setText(self.tr('delete_confirm_one').format(os.path.basename(target_path)))
-        msg.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        msg.setDefaultButton(QMessageBox.StandardButton.No)
-        if msg.exec() != QMessageBox.StandardButton.Yes:
+        message = self.tr('delete_confirm_one').format(os.path.basename(target_path))
+        if not self.confirm_delete_action(message):
             return
 
         error = False
@@ -1666,6 +1819,25 @@ class MainWindow(QMainWindow):
             return
         QApplication.clipboard().setText(text)
         self.show_toast(self.tr('copied'))
+
+    def confirm_delete_action(self, message: str):
+        if not self.settings.value("confirm_delete", True, type=bool):
+            return True
+
+        dialog = DeleteConfirmDialog(
+            self.tr,
+            self.get_theme(),
+            self.dark_mode,
+            self.tr('delete_confirm_title'),
+            message,
+            self.tr('delete'),
+            self,
+        )
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            if dialog.skip_future():
+                self.settings.setValue("confirm_delete", False)
+            return True
+        return False
 
     def update_detail_splitter_sizes(self):
         if not hasattr(self, 'splitter') or not hasattr(self, 'info_scroll'):
