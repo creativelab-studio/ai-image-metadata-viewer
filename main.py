@@ -3,10 +3,14 @@ import os
 import re
 import json
 import html
+import time
+import hashlib
+import tempfile
 import traceback
 import ctypes
 import send2trash
 from PIL import Image
+from collections import OrderedDict
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
@@ -22,7 +26,10 @@ from PyQt6.QtGui import (
     QImage, QResizeEvent, QColor, QPainter, QShowEvent,
     QShortcut, QKeySequence, QGuiApplication, QFontMetrics
 )
-from PyQt6.QtCore import Qt, QSize, QThread, pyqtSignal, QTimer, QSettings
+from PyQt6.QtCore import (
+    Qt, QSize, QThread, pyqtSignal, QTimer, QSettings,
+    QObject, QRunnable, QThreadPool, QStandardPaths, QLockFile
+)
 
 
 # --- 异常捕获 ---
@@ -39,7 +46,19 @@ def exception_hook(exctype, value, tb):
 
 sys.excepthook = exception_hook
 
-VALID_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp', '.bmp')
+VALID_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp')
+
+THUMBNAIL_ICON_SIZE = 220
+THUMBNAIL_RENDER_SIZE = (240, 240)
+THUMBNAIL_MEMORY_TARGET_BYTES = 80 * 1024 * 1024
+THUMBNAIL_MEMORY_MAX_BYTES = 120 * 1024 * 1024
+THUMBNAIL_DISK_MAX_BYTES = 2 * 1024 * 1024 * 1024
+THUMBNAIL_DISK_MAX_AGE_SECONDS = 60 * 24 * 3600
+THUMBNAIL_BATCH_SIZE = 48
+THUMBNAIL_FLUSH_INTERVAL_MS = 16
+THUMBNAIL_CLEANUP_BATCH_SIZE = 32
+THUMBNAIL_CLEANUP_INTERVAL_MS = 20
+THUMBNAIL_IDLE_CLEANUP_DELAY_MS = 8000
 
 
 # ==========================================
@@ -80,7 +99,7 @@ class NativeTheme:
 # --- 多语言字典 ---
 TRANSLATIONS = {
     'en': {
-        'title': "AI Image Metadata Viewer (Basic) v1.2.1",
+        'title': "AI Image Metadata Viewer (Basic) v1.2.2",
         'open_file': "Open Image",
         'open_folder': "Open Folder",
         'clear': "Clear All",
@@ -116,7 +135,7 @@ TRANSLATIONS = {
         'refresh': "Refresh folder",
     },
     'cn': {
-        'title': "AI \u56fe\u7247\u5143\u6570\u636e\u67e5\u770b\u5668 (\u57fa\u7840\u7248) v1.2.1",
+        'title': "AI \u56fe\u7247\u5143\u6570\u636e\u67e5\u770b\u5668 (\u57fa\u7840\u7248) v1.2.2",
         'open_file': "\u6253\u5f00\u56fe\u7247",
         'open_folder': "\u6253\u5f00\u6587\u4ef6\u5939",
         'clear': "\u6e05\u7a7a\u5217\u8868",
@@ -152,7 +171,7 @@ TRANSLATIONS = {
         'refresh': "\u5237\u65b0\u6587\u4ef6\u5939",
     },
     'tc': {
-        'title': "AI \u5716\u7247\u5143\u6578\u64da\u67e5\u770b\u5668 (\u57fa\u790e\u7248) v1.2.1",
+        'title': "AI \u5716\u7247\u5143\u6578\u64da\u67e5\u770b\u5668 (\u57fa\u790e\u7248) v1.2.2",
         'open_file': "\u6253\u958b\u5716\u7247",
         'open_folder': "\u6253\u958b\u8cc7\u6599\u593e",
         'clear': "\u6e05\u7a7a\u5217\u8868",
@@ -188,7 +207,7 @@ TRANSLATIONS = {
         'refresh': "\u91cd\u65b0\u6574\u7406\u8cc7\u6599\u593e",
     },
     'jp': {
-        'title': "AI \u753b\u50cf\u30e1\u30bf\u30c7\u30fc\u30bf\u30d3\u30e5\u30fc\u30a2 (Basic) v1.2.1",
+        'title': "AI \u753b\u50cf\u30e1\u30bf\u30c7\u30fc\u30bf\u30d3\u30e5\u30fc\u30a2 (Basic) v1.2.2",
         'open_file': "\u753b\u50cf\u3092\u958b\u304f",
         'open_folder': "\u30d5\u30a9\u30eb\u30c0\u3092\u958b\u304f",
         'clear': "\u30ea\u30b9\u30c8\u3092\u30af\u30ea\u30a2",
@@ -224,7 +243,7 @@ TRANSLATIONS = {
         'refresh': "\u30d5\u30a9\u30eb\u30c0\u3092\u66f4\u65b0",
     },
     'kr': {
-        'title': "AI \uc774\ubbf8\uc9c0 \uba54\ud0c0\ub370\uc774\ud130 \ubdf0\uc5b4 (Basic) v1.2.1",
+        'title': "AI \uc774\ubbf8\uc9c0 \uba54\ud0c0\ub370\uc774\ud130 \ubdf0\uc5b4 (Basic) v1.2.2",
         'open_file': "\uc774\ubbf8\uc9c0 \uc5f4\uae30",
         'open_folder': "\ud3f4\ub354 \uc5f4\uae30",
         'clear': "\ubaa9\ub85d \uc9c0\uc6b0\uae30",
@@ -320,44 +339,99 @@ def create_emoji_icon(emoji_char, size=64, color: str | None = None):
     return QIcon(pixmap)
 
 
-def pil2pixmap(pil_image):
+def pil2qimage(pil_image):
+    try:
+        pil_image.seek(0)
+    except Exception:
+        pass
     if pil_image.mode == "RGB":
-        pil_image = pil_image.convert("RGBA")
-    elif pil_image.mode == "L":
         pil_image = pil_image.convert("RGBA")
     if pil_image.mode != "RGBA":
         pil_image = pil_image.convert("RGBA")
-    r, g, b, a = pil_image.split()
-    im_rgba = Image.merge("RGBA", (r, g, b, a))
-    data = im_rgba.tobytes("raw", "RGBA")
-    qim = QImage(data, im_rgba.size[0], im_rgba.size[1], QImage.Format.Format_RGBA8888)
-    return QPixmap.fromImage(qim)
+    else:
+        pil_image = pil_image.copy()
+    data = pil_image.tobytes("raw", "RGBA")
+    qim = QImage(data, pil_image.size[0], pil_image.size[1], QImage.Format.Format_RGBA8888)
+    return qim.copy()
 
 
-class ThumbnailLoader(QThread):
-    thumbnail_loaded = pyqtSignal(str, QPixmap)
+def pil2pixmap(pil_image):
+    return QPixmap.fromImage(pil2qimage(pil_image))
 
-    def __init__(self, file_list):
+
+class ThumbnailLoadSession:
+    def __init__(self, request_id: int):
+        self.request_id = request_id
+        self.cancelled = False
+
+
+class ThumbnailTaskSignals(QObject):
+    result = pyqtSignal(object)
+    finished = pyqtSignal(int)
+
+
+class ThumbnailTask(QRunnable):
+    def __init__(self, session, index, path, cache_key, cache_file, signature):
         super().__init__()
-        self.file_list = file_list
-        self.running = True
-        self.request_id = 0
-
+        self.session = session
+        self.request_id = session.request_id
+        self.index = index
+        self.path = path
+        self.cache_key = cache_key
+        self.cache_file = cache_file
+        self.signature = signature
+        self.signals = ThumbnailTaskSignals()
+        self.setAutoDelete(True)
 
     def run(self):
-        for full_path in self.file_list:
-            if not self.running:
-                break
-            try:
-                with Image.open(full_path) as img:
-                    img.thumbnail((240, 240), Image.Resampling.LANCZOS)
-                    self.thumbnail_loaded.emit(full_path, pil2pixmap(img))
-            except:
-                continue
+        try:
+            if self.session.cancelled:
+                return
 
-    def stop(self):
-        self.running = False
-        self.wait()
+            image = QImage()
+            source = "generated"
+            if self.cache_file and os.path.exists(self.cache_file):
+                cached = QImage(self.cache_file)
+                if not cached.isNull():
+                    image = cached
+                    source = "disk"
+
+            if image.isNull():
+                with Image.open(self.path) as img:
+                    img.thumbnail(THUMBNAIL_RENDER_SIZE, Image.Resampling.LANCZOS)
+                    image = pil2qimage(img)
+                if not image.isNull() and self.cache_file and not self.session.cancelled:
+                    tmp_path = None
+                    try:
+                        os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+                        tmp_path = f"{self.cache_file}.{os.getpid()}.{id(self)}.tmp"
+                        image.save(tmp_path, "PNG")
+                        os.replace(tmp_path, self.cache_file)
+                    except Exception:
+                        if tmp_path:
+                            try:
+                                os.remove(tmp_path)
+                            except Exception:
+                                pass
+                        pass
+
+            if self.session.cancelled or image.isNull():
+                return
+
+            self.signals.result.emit({
+                "request_id": self.request_id,
+                "index": self.index,
+                "path": self.path,
+                "image": image,
+                "cache_key": self.cache_key,
+                "cache_file": self.cache_file,
+                "signature": self.signature,
+                "source": source,
+            })
+        except Exception:
+            pass
+        finally:
+            self.signals.finished.emit(self.request_id)
 
 
 class GridListWidget(QListWidget):
@@ -367,15 +441,21 @@ class GridListWidget(QListWidget):
         if delta == 0:
             return
 
-        # 一行的高度：gridSize 高度 + 间距
-        row_height = self.gridSize().height() + self.spacing()
-        # 每个 step（120）滚动 2 行
+        row_height = max(1, self.gridSize().height())
         steps = delta / 120.0
-        pixels = int(-steps * 2 * row_height)   # 向上滚时 delta>0，要减小 scroll value
+        pixels = int(-steps * 2 * row_height)
 
         bar = self.verticalScrollBar()
         bar.setValue(bar.value() + pixels)
         event.accept()
+
+    def mousePressEvent(self, event):
+        bar = self.verticalScrollBar()
+        previous_value = bar.value()
+        super().mousePressEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            bar.setValue(previous_value)
+            QTimer.singleShot(0, lambda value=previous_value: bar.setValue(value))
 
 
 # --- 自定义滚轮行为的图片滚动区域：在图片区域用滚轮切图 ---
@@ -1176,24 +1256,80 @@ class MainWindow(QMainWindow):
         self.dark_mode = self.settings.value("theme", True, type=bool)
         self.sort_mode = self.settings.value("sort_mode", "name_natural", type=str)
 
-        self.setWindowTitle("AI Image Metadata Viewer (Basic) v1.2.1")
+        self.setWindowTitle("AI Image Metadata Viewer (Basic) v1.2.2")
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
         self._initial_geometry_applied = False
         self.setAcceptDrops(True)
 
+        self.thumbnail_pool = QThreadPool(self)
+        self.thumbnail_pool.setMaxThreadCount(min(6, max(2, (os.cpu_count() or 4) - 1)))
         self.loader_thread = None
+        self._thumbnail_session = None
+        self._thumbnail_tasks_remaining = 0
+        self._thumbnail_flush_timer = QTimer(self)
+        self._thumbnail_flush_timer.setSingleShot(True)
+        self._thumbnail_flush_timer.timeout.connect(self.flush_pending_thumbnail_updates)
+        self._pending_thumbnail_updates = []
+        self._grid_items_by_path = {}
         self._loading_request_id = 0
         self._loading_in_progress = False
         self._pending_restore_path = None
         self._pending_restore_selected_paths = []
+        self._grid_restore_anchor_valid = False
+        self._grid_restore_anchor_path = None
+        self._grid_restore_anchor_row = 0
+        self._grid_restore_anchor_row_offset = 0
+        self._grid_restore_anchor_cols = 1
+        self._grid_resize_restore_active = False
+        self._grid_restore_timer = QTimer(self)
+        self._grid_restore_timer.setSingleShot(True)
+        self._grid_restore_timer.timeout.connect(lambda: self.ensure_current_grid_item_visible(top=True, delay=0))
+
+        self._thumbnail_memory_cache = OrderedDict()
+        self._thumbnail_memory_bytes = 0
+        self._thumbnail_cache_dir = self._resolve_thumbnail_cache_dir()
+        self._thumbnail_cache_index_path = os.path.join(self._thumbnail_cache_dir, 'index.json') if self._thumbnail_cache_dir else None
+        self._thumbnail_disk_cache_enabled = bool(self._thumbnail_cache_dir)
+        self._thumbnail_cache_index = {}
+        self._thumbnail_cache_path_map = {}
+        self._thumbnail_cache_folder_map = {}
+        self._thumbnail_cache_removed_keys = set()
+        self._thumbnail_cache_index_dirty = False
+        self._thumbnail_cache_save_timer = QTimer(self)
+        self._thumbnail_cache_save_timer.setSingleShot(True)
+        self._thumbnail_cache_save_timer.timeout.connect(self.save_thumbnail_cache_index)
+        self._thumbnail_cleanup_running = False
+        self._thumbnail_cleanup_items = []
+        self._thumbnail_cleanup_pos = 0
+        self._thumbnail_cleanup_snapshot_keys = set()
+        self._thumbnail_cleanup_valid_entries = {}
+        self._thumbnail_cleanup_total_size = 0
+        self._thumbnail_cleanup_removed = False
+        self._thumbnail_cleanup_timer = QTimer(self)
+        self._thumbnail_cleanup_timer.setSingleShot(True)
+        self._thumbnail_cleanup_timer.timeout.connect(self._cleanup_thumbnail_cache_step)
+        self._thumbnail_cleanup_start_timer = QTimer(self)
+        self._thumbnail_cleanup_start_timer.setSingleShot(True)
+        self._thumbnail_cleanup_start_timer.timeout.connect(self.cleanup_thumbnail_cache)
+        self._thumbnail_cleanup_lock = None
+        self._blank_thumbnail_icon = QIcon()
+        self._detail_metadata_cache = {}
+        self.detail_animation_timer = QTimer(self)
+        self.detail_animation_timer.setSingleShot(True)
+        self.detail_animation_timer.timeout.connect(self.advance_detail_animation_frame)
+        self.detail_animation_image = None
+        self.detail_animation_path = None
+        self.detail_animation_frame = 0
+
         self.current_image_path = None
         self.current_loaded_folder = None
         self.current_file_list = []
         self.current_index = -1
         self.current_pos_text = ""
         self.current_neg_text = ""
+        self._drop_handling = False
 
         self.grid_item_height = 260
         self.grid_item_min_width = 220
@@ -1214,6 +1350,7 @@ class MainWindow(QMainWindow):
         self.apply_style()
         self.update_ui_text()
         self.setup_shortcuts()
+        self.load_thumbnail_cache_index()
 
 
     def _target_screen_geometry(self):
@@ -1273,6 +1410,487 @@ class MainWindow(QMainWindow):
         if self._initial_geometry_applied:
             QTimer.singleShot(0, self.center_on_available_screen)
 
+    def _resolve_thumbnail_cache_dir(self):
+        base_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
+        if not base_dir:
+            base_dir = os.path.join(tempfile.gettempdir(), 'AI_ImageViewer_Basic')
+        cache_dir = os.path.join(base_dir, 'thumbnail_cache')
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            return cache_dir
+        except Exception:
+            return None
+
+    def load_thumbnail_cache_index(self):
+        self._thumbnail_cache_index = {}
+        self._thumbnail_cache_path_map = {}
+        self._thumbnail_cache_folder_map = {}
+        if not self._thumbnail_disk_cache_enabled or not self._thumbnail_cache_index_path:
+            return
+        try:
+            with open(self._thumbnail_cache_index_path, 'r', encoding='utf-8') as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                self._thumbnail_cache_index = data
+        except Exception:
+            self._thumbnail_cache_index = {}
+        self._rebuild_thumbnail_cache_path_map()
+
+    def _rebuild_thumbnail_cache_path_map(self):
+        self._thumbnail_cache_path_map = {}
+        self._thumbnail_cache_folder_map = {}
+        for cache_key, entry in self._thumbnail_cache_index.items():
+            path = os.path.normpath(entry.get('path', ''))
+            if not path:
+                continue
+            self._thumbnail_cache_path_map.setdefault(path, set()).add(cache_key)
+            folder = os.path.normcase(os.path.dirname(path))
+            self._thumbnail_cache_folder_map.setdefault(folder, set()).add(path)
+
+    def schedule_thumbnail_cache_save(self):
+        if not self._thumbnail_disk_cache_enabled:
+            return
+        self._thumbnail_cache_index_dirty = True
+        self._thumbnail_cache_save_timer.start(800)
+
+    def save_thumbnail_cache_index(self):
+        if not self._thumbnail_disk_cache_enabled or not self._thumbnail_cache_index_dirty:
+            return
+        lock = QLockFile(self._thumbnail_cache_index_path + '.lock')
+        lock.setStaleLockTime(30000)
+        if not lock.tryLock(150):
+            self._thumbnail_cache_save_timer.start(1200)
+            return
+        tmp_path = None
+        try:
+            os.makedirs(self._thumbnail_cache_dir, exist_ok=True)
+            merged_index = {}
+            try:
+                with open(self._thumbnail_cache_index_path, 'r', encoding='utf-8') as fh:
+                    existing = json.load(fh)
+                if isinstance(existing, dict):
+                    merged_index.update(existing)
+            except Exception:
+                pass
+            for removed_key in self._thumbnail_cache_removed_keys:
+                merged_index.pop(removed_key, None)
+            merged_index.update(self._thumbnail_cache_index)
+
+            tmp_path = f"{self._thumbnail_cache_index_path}.{os.getpid()}.{id(self)}.tmp"
+            with open(tmp_path, 'w', encoding='utf-8') as fh:
+                json.dump(merged_index, fh, ensure_ascii=False, separators=(',', ':'))
+            os.replace(tmp_path, self._thumbnail_cache_index_path)
+            self._thumbnail_cache_index = merged_index
+            self._rebuild_thumbnail_cache_path_map()
+            self._thumbnail_cache_removed_keys.clear()
+            self._thumbnail_cache_index_dirty = False
+        except Exception:
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            self._thumbnail_cache_save_timer.start(1500)
+        finally:
+            lock.unlock()
+
+    def schedule_thumbnail_cache_cleanup(self, delay_ms=4000):
+        if not self._thumbnail_disk_cache_enabled:
+            return
+        self._thumbnail_cleanup_start_timer.start(delay_ms)
+
+    def _is_thumbnail_cleanup_busy(self):
+        if self._loading_in_progress or self._thumbnail_tasks_remaining > 0:
+            return True
+        if getattr(self, '_drop_handling', False):
+            return True
+        if hasattr(self, 'detail_animation_timer') and self.detail_animation_timer.isActive():
+            return True
+        return False
+
+    def _release_thumbnail_cleanup_lock(self):
+        lock = self._thumbnail_cleanup_lock
+        self._thumbnail_cleanup_lock = None
+        if lock is not None:
+            try:
+                lock.unlock()
+            except Exception:
+                pass
+
+    def _reset_thumbnail_cleanup_state(self):
+        self._thumbnail_cleanup_running = False
+        self._thumbnail_cleanup_items = []
+        self._thumbnail_cleanup_pos = 0
+        self._thumbnail_cleanup_snapshot_keys = set()
+        self._thumbnail_cleanup_valid_entries = {}
+        self._thumbnail_cleanup_total_size = 0
+        self._thumbnail_cleanup_removed = False
+        self._release_thumbnail_cleanup_lock()
+
+    def cleanup_thumbnail_cache(self):
+        if not self._thumbnail_disk_cache_enabled or self._thumbnail_cleanup_running:
+            return
+        if self._is_thumbnail_cleanup_busy():
+            return
+        cleanup_lock = QLockFile(os.path.join(self._thumbnail_cache_dir, 'cleanup.lock'))
+        cleanup_lock.setStaleLockTime(30000)
+        if not cleanup_lock.tryLock(50):
+            return
+        self._thumbnail_cleanup_lock = cleanup_lock
+        self._thumbnail_cleanup_running = True
+        self._thumbnail_cleanup_items = list(self._thumbnail_cache_index.items())
+        self._thumbnail_cleanup_snapshot_keys = set(self._thumbnail_cache_index.keys())
+        self._thumbnail_cleanup_pos = 0
+        self._thumbnail_cleanup_valid_entries = {}
+        self._thumbnail_cleanup_total_size = 0
+        self._thumbnail_cleanup_removed = False
+        self._cleanup_thumbnail_cache_step()
+
+    def _cleanup_thumbnail_cache_step(self):
+        if not self._thumbnail_cleanup_running:
+            return
+        if self._is_thumbnail_cleanup_busy():
+            self._reset_thumbnail_cleanup_state()
+            return
+
+        now = time.time()
+        end_pos = min(
+            len(self._thumbnail_cleanup_items),
+            self._thumbnail_cleanup_pos + THUMBNAIL_CLEANUP_BATCH_SIZE,
+        )
+
+        for cache_key, entry in self._thumbnail_cleanup_items[self._thumbnail_cleanup_pos:end_pos]:
+            path = os.path.normpath(entry.get('path', ''))
+            cache_file = self._thumbnail_cache_file(cache_key)
+            if not path or not cache_file or not os.path.exists(cache_file):
+                self._thumbnail_cleanup_removed = True
+                continue
+            if now - float(entry.get('atime', now)) > THUMBNAIL_DISK_MAX_AGE_SECONDS:
+                try:
+                    os.remove(cache_file)
+                except Exception:
+                    pass
+                self._thumbnail_cleanup_removed = True
+                continue
+            try:
+                file_size = os.path.getsize(cache_file)
+            except Exception:
+                file_size = 0
+            entry['file_size'] = file_size
+            self._thumbnail_cleanup_total_size += file_size
+            self._thumbnail_cleanup_valid_entries[cache_key] = entry
+
+        self._thumbnail_cleanup_pos = end_pos
+        if self._thumbnail_cleanup_pos < len(self._thumbnail_cleanup_items):
+            self._thumbnail_cleanup_timer.start(THUMBNAIL_CLEANUP_INTERVAL_MS)
+            return
+
+        valid_entries = self._thumbnail_cleanup_valid_entries
+        if self._thumbnail_cleanup_total_size > THUMBNAIL_DISK_MAX_BYTES:
+            overflow = self._thumbnail_cleanup_total_size - THUMBNAIL_DISK_MAX_BYTES
+            ordered = sorted(valid_entries.items(), key=lambda kv: kv[1].get('atime', 0))
+            for cache_key, entry in ordered:
+                cache_file = self._thumbnail_cache_file(cache_key)
+                file_size = int(entry.get('file_size', 0))
+                try:
+                    if cache_file and os.path.exists(cache_file):
+                        os.remove(cache_file)
+                except Exception:
+                    pass
+                valid_entries.pop(cache_key, None)
+                self._thumbnail_cleanup_removed = True
+                overflow -= file_size
+                if overflow <= 0:
+                    break
+
+        if self._thumbnail_cleanup_removed or len(valid_entries) != len(self._thumbnail_cache_index):
+            for cache_key, entry in self._thumbnail_cache_index.items():
+                if cache_key not in self._thumbnail_cleanup_snapshot_keys:
+                    valid_entries[cache_key] = entry
+            self._thumbnail_cache_removed_keys.update(
+                self._thumbnail_cleanup_snapshot_keys - set(valid_entries.keys())
+            )
+            self._thumbnail_cache_index = valid_entries
+            self._rebuild_thumbnail_cache_path_map()
+            self.schedule_thumbnail_cache_save()
+
+        self._reset_thumbnail_cleanup_state()
+
+    def _get_file_signature(self, path):
+        try:
+            st = os.stat(path)
+            mtime_ns = getattr(st, 'st_mtime_ns', int(st.st_mtime * 1_000_000_000))
+            return mtime_ns, st.st_size
+        except Exception:
+            return None
+
+    def _make_thumbnail_cache_key(self, path, signature):
+        if not signature:
+            return None
+        norm = os.path.normcase(os.path.normpath(path))
+        mtime_ns, size = signature
+        raw = f'{norm}|{mtime_ns}|{size}'.encode('utf-8', 'ignore')
+        return hashlib.sha1(raw).hexdigest()
+
+    def _thumbnail_cache_file(self, cache_key):
+        if not self._thumbnail_disk_cache_enabled or not cache_key:
+            return None
+        return os.path.join(self._thumbnail_cache_dir, f'{cache_key}.png')
+
+    def _touch_thumbnail_cache_entry(self, cache_key):
+        entry = self._thumbnail_cache_index.get(cache_key)
+        if not entry:
+            return
+        entry['atime'] = time.time()
+        self.schedule_thumbnail_cache_save()
+
+    def _track_thumbnail_cache_key(self, path, cache_key):
+        if not path or not cache_key:
+            return
+        norm = os.path.normpath(path)
+        self._thumbnail_cache_path_map.setdefault(norm, set()).add(cache_key)
+        folder = os.path.normcase(os.path.dirname(norm))
+        self._thumbnail_cache_folder_map.setdefault(folder, set()).add(norm)
+
+    def _register_thumbnail_cache_entry(self, cache_key, path, signature, cache_file):
+        if not cache_key or not path:
+            return
+        self._track_thumbnail_cache_key(path, cache_key)
+        if not self._thumbnail_disk_cache_enabled or not cache_file:
+            return
+        file_size = 0
+        try:
+            if os.path.exists(cache_file):
+                file_size = os.path.getsize(cache_file)
+        except Exception:
+            file_size = 0
+        mtime_ns, size = signature if signature else (None, None)
+        self._thumbnail_cache_index[cache_key] = {
+            'path': os.path.normpath(path),
+            'mtime_ns': mtime_ns,
+            'size': size,
+            'atime': time.time(),
+            'file_size': file_size,
+        }
+        self.schedule_thumbnail_cache_save()
+
+    def _remove_thumbnail_cache_entry(self, cache_key, remove_file=True):
+        entry = self._thumbnail_cache_index.pop(cache_key, None)
+        self._thumbnail_cache_removed_keys.add(cache_key)
+        if entry:
+            path = os.path.normpath(entry.get('path', ''))
+            if path in self._thumbnail_cache_path_map:
+                self._thumbnail_cache_path_map[path].discard(cache_key)
+                if not self._thumbnail_cache_path_map[path]:
+                    self._thumbnail_cache_path_map.pop(path, None)
+                    folder = os.path.normcase(os.path.dirname(path))
+                    if folder in self._thumbnail_cache_folder_map:
+                        self._thumbnail_cache_folder_map[folder].discard(path)
+                        if not self._thumbnail_cache_folder_map[folder]:
+                            self._thumbnail_cache_folder_map.pop(folder, None)
+            self.schedule_thumbnail_cache_save()
+        for mapped_path, key_set in list(self._thumbnail_cache_path_map.items()):
+            if cache_key in key_set:
+                key_set.discard(cache_key)
+                if not key_set:
+                    self._thumbnail_cache_path_map.pop(mapped_path, None)
+                    folder = os.path.normcase(os.path.dirname(mapped_path))
+                    if folder in self._thumbnail_cache_folder_map:
+                        self._thumbnail_cache_folder_map[folder].discard(mapped_path)
+                        if not self._thumbnail_cache_folder_map[folder]:
+                            self._thumbnail_cache_folder_map.pop(folder, None)
+        pixmap_entry = self._thumbnail_memory_cache.pop(cache_key, None)
+        if pixmap_entry:
+            self._thumbnail_memory_bytes = max(0, self._thumbnail_memory_bytes - pixmap_entry[1])
+        if remove_file:
+            cache_file = self._thumbnail_cache_file(cache_key)
+            if cache_file and os.path.exists(cache_file):
+                try:
+                    os.remove(cache_file)
+                except Exception:
+                    pass
+
+    def remove_thumbnail_cache_for_path(self, path):
+        norm = os.path.normpath(path)
+        keys = set(self._thumbnail_cache_path_map.get(norm, set()))
+        signature = self._get_file_signature(path)
+        cache_key = self._make_thumbnail_cache_key(path, signature)
+        if cache_key:
+            keys.add(cache_key)
+        for key in list(keys):
+            self._remove_thumbnail_cache_entry(key, remove_file=True)
+
+    def prune_thumbnail_cache_for_folder(self, folder_path, live_paths):
+        if not self._thumbnail_disk_cache_enabled or not folder_path:
+            return
+
+        folder_norm = os.path.normcase(os.path.normpath(folder_path))
+        live_set = {
+            os.path.normcase(os.path.normpath(path))
+            for path in live_paths
+        }
+        stale_keys = []
+        for path in list(self._thumbnail_cache_folder_map.get(folder_norm, set())):
+            if os.path.normcase(path) not in live_set:
+                stale_keys.extend(self._thumbnail_cache_path_map.get(path, set()))
+
+        for cache_key in stale_keys:
+            self._remove_thumbnail_cache_entry(cache_key, remove_file=True)
+
+    def _estimate_image_bytes(self, image_or_pixmap):
+        try:
+            if isinstance(image_or_pixmap, QPixmap):
+                image = image_or_pixmap.toImage()
+                return max(1, image.sizeInBytes())
+            return max(1, image_or_pixmap.sizeInBytes())
+        except Exception:
+            try:
+                return max(1, image_or_pixmap.width() * image_or_pixmap.height() * 4)
+            except Exception:
+                return 1
+
+    def _put_memory_thumbnail(self, cache_key, path, pixmap, estimated_bytes=None):
+        if not cache_key or pixmap.isNull():
+            return
+        if cache_key in self._thumbnail_memory_cache:
+            _, old_size = self._thumbnail_memory_cache.pop(cache_key)
+            self._thumbnail_memory_bytes = max(0, self._thumbnail_memory_bytes - old_size)
+        size_bytes = estimated_bytes if estimated_bytes is not None else self._estimate_image_bytes(pixmap)
+        self._thumbnail_memory_cache[cache_key] = (pixmap, size_bytes)
+        self._thumbnail_memory_cache.move_to_end(cache_key)
+        self._thumbnail_memory_bytes += size_bytes
+        self._track_thumbnail_cache_key(path, cache_key)
+        while self._thumbnail_memory_bytes > THUMBNAIL_MEMORY_MAX_BYTES and self._thumbnail_memory_cache:
+            old_key, (_, old_size) = self._thumbnail_memory_cache.popitem(last=False)
+            self._thumbnail_memory_bytes = max(0, self._thumbnail_memory_bytes - old_size)
+        while self._thumbnail_memory_bytes > THUMBNAIL_MEMORY_TARGET_BYTES and len(self._thumbnail_memory_cache) > 1:
+            old_key, (_, old_size) = self._thumbnail_memory_cache.popitem(last=False)
+            self._thumbnail_memory_bytes = max(0, self._thumbnail_memory_bytes - old_size)
+
+    def _get_memory_thumbnail(self, cache_key):
+        if not cache_key:
+            return None
+        entry = self._thumbnail_memory_cache.get(cache_key)
+        if not entry:
+            return None
+        pixmap, size_bytes = entry
+        self._thumbnail_memory_cache.move_to_end(cache_key)
+        return pixmap
+
+    def _get_blank_thumbnail_icon(self):
+        if self._blank_thumbnail_icon.isNull():
+            pixmap = QPixmap(self.list_widget.iconSize())
+            pixmap.fill(Qt.GlobalColor.transparent)
+            self._blank_thumbnail_icon = QIcon(pixmap)
+        return self._blank_thumbnail_icon
+
+    def _format_thumbnail_label(self, path):
+        filename = os.path.basename(path)
+        if len(filename) > 30:
+            return filename[:18] + '...' + filename[-8:]
+        return filename
+
+    def _populate_grid_placeholders(self):
+        self._grid_items_by_path = {}
+        blank_icon = self._get_blank_thumbnail_icon()
+        self.list_widget.setUpdatesEnabled(False)
+        try:
+            for path in self.current_file_list:
+                item = QListWidgetItem(self._format_thumbnail_label(path))
+                item.setIcon(blank_icon)
+                item.setData(Qt.ItemDataRole.UserRole, path)
+                item.setSizeHint(self.list_widget.gridSize())
+                self.list_widget.addItem(item)
+                self._grid_items_by_path[path] = item
+        finally:
+            self.list_widget.setUpdatesEnabled(True)
+
+    def _prioritized_thumbnail_indices(self):
+        total = len(self.current_file_list)
+        if total <= 1:
+            return list(range(total))
+        viewport = self.list_widget.viewport()
+        grid_size = self.list_widget.gridSize()
+        item_w = max(1, grid_size.width())
+        item_h = max(1, grid_size.height())
+        spacing = max(1, self.list_widget.spacing())
+        viewport_w = viewport.width() or self.width() or 1200
+        viewport_h = viewport.height() or int(self.height() * 0.55) or 800
+        cols = max(1, viewport_w // max(1, item_w + spacing))
+        rows = max(2, (viewport_h // max(1, item_h + spacing)) + 1)
+        priority_count = min(total, cols * rows)
+        priority = []
+        selected_path = self._pending_restore_path or self.current_image_path
+        if selected_path and selected_path in self.current_file_list:
+            priority.append(self.current_file_list.index(selected_path))
+        priority.extend(range(priority_count))
+        seen = set()
+        ordered = []
+        for idx in priority:
+            if 0 <= idx < total and idx not in seen:
+                ordered.append(idx)
+                seen.add(idx)
+        ordered.extend(idx for idx in range(total) if idx not in seen)
+        return ordered
+
+    def cancel_thumbnail_loading(self):
+        if self._thumbnail_session is not None:
+            self._thumbnail_session.cancelled = True
+        self._thumbnail_tasks_remaining = 0
+        self._pending_thumbnail_updates = []
+        self._thumbnail_flush_timer.stop()
+        self._loading_in_progress = False
+
+    def queue_thumbnail_update(self, payload):
+        if payload.get('request_id') != self._loading_request_id:
+            return
+        if self._thumbnail_session is None or self._thumbnail_session.cancelled:
+            return
+        self._pending_thumbnail_updates.append(payload)
+        if not self._thumbnail_flush_timer.isActive():
+            self._thumbnail_flush_timer.start(THUMBNAIL_FLUSH_INTERVAL_MS)
+
+    def flush_pending_thumbnail_updates(self):
+        if not self._pending_thumbnail_updates:
+            self.maybe_finalize_thumbnail_loading()
+            return
+        batch = self._pending_thumbnail_updates[:THUMBNAIL_BATCH_SIZE]
+        del self._pending_thumbnail_updates[:THUMBNAIL_BATCH_SIZE]
+        for payload in batch:
+            if payload.get('request_id') != self._loading_request_id:
+                continue
+            qimage = payload.get('image')
+            path = payload.get('path')
+            cache_key = payload.get('cache_key')
+            if not isinstance(qimage, QImage) or qimage.isNull() or not path:
+                continue
+            pixmap = QPixmap.fromImage(qimage)
+            self._put_memory_thumbnail(cache_key, path, pixmap, self._estimate_image_bytes(qimage))
+            self._register_thumbnail_cache_entry(cache_key, path, payload.get('signature'), payload.get('cache_file'))
+            self.add_thumbnail_item(path, pixmap)
+            self._touch_thumbnail_cache_entry(cache_key)
+        if self._pending_thumbnail_updates:
+            self._thumbnail_flush_timer.start(THUMBNAIL_FLUSH_INTERVAL_MS)
+        else:
+            self.maybe_finalize_thumbnail_loading()
+
+    def on_thumbnail_task_finished(self, request_id):
+        if request_id != self._loading_request_id:
+            return
+        if self._thumbnail_session is None or self._thumbnail_session.cancelled:
+            return
+        self._thumbnail_tasks_remaining = max(0, self._thumbnail_tasks_remaining - 1)
+        self.maybe_finalize_thumbnail_loading()
+
+    def maybe_finalize_thumbnail_loading(self):
+        if self._thumbnail_session is None or self._thumbnail_session.cancelled:
+            return
+        if self._thumbnail_tasks_remaining > 0:
+            return
+        if self._pending_thumbnail_updates:
+            return
+        self.on_thumbnails_load_finished()
+
     # ---------- Toast ----------
     def setup_toast(self):
         self.toast_label = QLabel(self)
@@ -1291,14 +1909,24 @@ class MainWindow(QMainWindow):
         self.toast_label.hide()
         self.toast_timer = QTimer(self)
         self.toast_timer.setSingleShot(True)
-        self.toast_timer.timeout.connect(self.toast_label.hide)
+        self.toast_timer.timeout.connect(self.hide_toast)
+
+    def position_toast(self):
+        if not hasattr(self, 'toast_label') or not self.toast_label.text():
+            return
+        self.toast_label.adjustSize()
+        margin = 24
+        x = max(margin, (self.width() - self.toast_label.width()) // 2)
+        y = max(margin, self.height() - self.toast_label.height() - 28)
+        self.toast_label.move(x, y)
+
+    def hide_toast(self):
+        self.toast_timer.stop()
+        self.toast_label.hide()
 
     def show_toast(self, message, duration=2000):
         self.toast_label.setText(message)
-        self.toast_label.adjustSize()
-        x = (self.width() - self.toast_label.width()) // 2
-        y = self.height() - 100
-        self.toast_label.move(x, y)
+        self.position_toast()
         self.toast_label.show()
         self.toast_label.raise_()
         self.toast_timer.stop()
@@ -1700,8 +2328,12 @@ class MainWindow(QMainWindow):
         if not self.confirm_delete_action(message):
             return
 
+        if self.stacked_widget.currentIndex() == 1:
+            self.stop_detail_animation()
+
         error = False
         try:
+            self.remove_thumbnail_cache_for_path(target_path)
             if os.path.exists(target_path):
                 send2trash.send2trash(target_path)
         except Exception:
@@ -1740,10 +2372,9 @@ class MainWindow(QMainWindow):
 
     # ---------- 清空全部 ----------
     def clear_all(self):
-        if self.loader_thread and self.loader_thread.isRunning():
-            self.loader_thread.stop()
+        self.cancel_thumbnail_loading()
+        self.stop_detail_animation()
         self.loader_thread = None
-        self._loading_in_progress = False
 
         self.current_file_list = []
         self.current_index = -1
@@ -1751,6 +2382,12 @@ class MainWindow(QMainWindow):
         self.current_loaded_folder = None
         self.current_pos_text = ""
         self.current_neg_text = ""
+        self._pending_restore_path = None
+        self._pending_restore_selected_paths = []
+        self._grid_items_by_path = {}
+        self._grid_restore_anchor_valid = False
+        self._grid_restore_anchor_path = None
+        self._grid_resize_restore_active = False
 
         self.list_widget.clear()
         self.set_grid_placeholder_state(True)
@@ -1868,14 +2505,20 @@ class MainWindow(QMainWindow):
         if self.stacked_widget.currentIndex() == 1 and self.current_image_path:
             QTimer.singleShot(0, self.update_detail_splitter_sizes)
             QTimer.singleShot(50, lambda: self.display_image_fit(self.current_image_path))
+        else:
+            if not self._grid_resize_restore_active:
+                self.capture_grid_restore_anchor()
+                self._grid_resize_restore_active = True
+            self.schedule_grid_restore(120)
         QTimer.singleShot(0, self.update_grid_for_width)
+        QTimer.singleShot(0, self.position_toast)
         self.position_sort_fab()
         super().resizeEvent(event)
 
     # ---------- Drag & Drop ----------
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
-            event.accept()
+            event.acceptProposedAction()
         else:
             event.ignore()
 
@@ -1884,12 +2527,19 @@ class MainWindow(QMainWindow):
             urls = event.mimeData().urls()
             if not urls:
                 return
+            paths = [os.path.normpath(url.toLocalFile()) for url in urls if url.toLocalFile()]
+            event.acceptProposedAction()
+            QTimer.singleShot(0, lambda paths=paths: self.handle_dropped_paths(paths))
+        except Exception as e:
+            print("Drop error:", e)
 
+    def handle_dropped_paths(self, paths):
+        self._drop_handling = True
+        try:
             dropped_dirs = []
             dropped_files = []
 
-            for url in urls:
-                p = os.path.normpath(url.toLocalFile())
+            for p in paths:
                 if os.path.isdir(p):
                     dropped_dirs.append(p)
                 elif os.path.isfile(p) and p.lower().endswith(VALID_EXTENSIONS):
@@ -1911,6 +2561,8 @@ class MainWindow(QMainWindow):
                     self.show_image_detail(self.current_file_list[0])
         except Exception as e:
             print("Drop error:", e)
+        finally:
+            self._drop_handling = False
 
 
     # ---------- 打开文件 / 文件夹 ----------
@@ -1919,7 +2571,7 @@ class MainWindow(QMainWindow):
             self,
             "Select Images",
             "",
-            "Images (*.png *.jpg *.jpeg *.webp *.bmp)"
+            "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp)"
         )
         if not files:
             return
@@ -1977,6 +2629,7 @@ class MainWindow(QMainWindow):
 
     def refresh_folder(self):
         if getattr(self, "current_loaded_folder", None) and os.path.isdir(self.current_loaded_folder):
+            self.capture_grid_restore_anchor()
             selected_paths = [it.data(Qt.ItemDataRole.UserRole) for it in self.list_widget.selectedItems()]
             cur_item = self.list_widget.currentItem()
             current_path = cur_item.data(Qt.ItemDataRole.UserRole) if cur_item else None
@@ -2009,29 +2662,187 @@ class MainWindow(QMainWindow):
         cur_item = self.list_widget.currentItem()
         selected_path = cur_item.data(Qt.ItemDataRole.UserRole) if cur_item else None
 
+        self.capture_grid_restore_anchor()
         self._pending_restore_selected_paths = list(selected_paths)
         self._pending_restore_path = selected_path
         self.current_file_list = self.apply_sort(self.current_file_list)
         self.current_index = self.current_file_list.index(selected_path) if selected_path in self.current_file_list else -1
 
         self.list_widget.clear()
+        self._grid_items_by_path = {}
+        self._blank_thumbnail_icon = QIcon()
         self.set_grid_placeholder_state(False)
         self.update_fab_visibility()
-
+        self._populate_grid_placeholders()
+        if self.current_index >= 0:
+            self._select_grid_index(self.current_index, scroll=False)
         self.start_thumbnail_loader()
-        self.show_toast(self.tr('loading'), duration=0)
+        if self._loading_in_progress:
+            self.show_toast(self.tr('loading'), duration=0)
+        else:
+            self.toast_label.hide()
 
 
 
 
 
-    def _select_grid_index(self, idx):
+    def _select_grid_index(self, idx, scroll=True):
         if 0 <= idx < self.list_widget.count():
             self.current_index = idx
             item = self.list_widget.item(idx)
             self.list_widget.setCurrentItem(item)
-            self.list_widget.scrollToItem(item)
+            if scroll:
+                self.list_widget.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtTop)
 
+    def _find_current_grid_item(self):
+        if not hasattr(self, 'list_widget') or self.list_widget.count() <= 0:
+            return None
+
+        if self.current_image_path:
+            normalized = os.path.normpath(self.current_image_path)
+            item = self._grid_items_by_path.get(normalized)
+            if item is not None:
+                try:
+                    self.current_index = self.current_file_list.index(normalized)
+                except ValueError:
+                    pass
+                return item
+
+        if 0 <= self.current_index < self.list_widget.count():
+            item = self.list_widget.item(self.current_index)
+            if item is not None:
+                return item
+
+        return self.list_widget.currentItem()
+
+    def _grid_column_count(self):
+        if not hasattr(self, 'list_widget'):
+            return 1
+        viewport_width = max(1, self.list_widget.viewport().width())
+        spacing = max(0, self.list_widget.spacing())
+        grid_width = self.list_widget.gridSize().width()
+        if grid_width <= 0:
+            grid_width = self.grid_item_min_width
+        return max(1, (viewport_width + spacing) // max(1, grid_width + spacing))
+
+    def capture_grid_restore_anchor(self):
+        if self.stacked_widget.currentIndex() != 0:
+            return
+        if not hasattr(self, 'list_widget') or self.list_widget.count() <= 0:
+            return
+        item = self.list_widget.currentItem() or self._find_current_grid_item()
+        if item is None:
+            return
+        rect = self.list_widget.visualItemRect(item)
+        viewport = self.list_widget.viewport()
+        if not rect.isValid() or rect.height() <= 0:
+            return
+        viewport_rect = viewport.rect()
+        if rect.bottom() < viewport_rect.top() or rect.top() > viewport_rect.bottom():
+            return
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        row_height = max(1, self.list_widget.gridSize().height() or rect.height())
+        row = max(0, rect.top() // row_height)
+        self._grid_restore_anchor_valid = True
+        self._grid_restore_anchor_path = os.path.normpath(path)
+        self._grid_restore_anchor_row = row
+        self._grid_restore_anchor_row_offset = rect.top() - (row * row_height)
+        self._grid_restore_anchor_cols = self._grid_column_count()
+
+    def schedule_grid_restore(self, delay=80):
+        if self.stacked_widget.currentIndex() != 0:
+            return
+        if hasattr(self, '_grid_restore_timer'):
+            self._grid_restore_timer.start(max(0, delay))
+
+    def _finalize_grid_anchor_adjust(self, item, expected_top, top=True):
+        if self.stacked_widget.currentIndex() != 0:
+            self._grid_resize_restore_active = False
+            return
+        rect = self.list_widget.visualItemRect(item)
+        if not rect.isValid() or rect.height() <= 0:
+            if top:
+                self.list_widget.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtTop)
+            self._grid_resize_restore_active = False
+            return
+        delta = rect.top() - expected_top
+        if delta:
+            sb = self.list_widget.verticalScrollBar()
+            sb.setValue(sb.value() + delta)
+        self._grid_resize_restore_active = False
+
+    def ensure_current_grid_item_visible(self, top=True, delay=0):
+        def apply_visibility():
+            if self.stacked_widget.currentIndex() != 0:
+                self._grid_resize_restore_active = False
+                return
+            item = self._find_current_grid_item()
+            if item is None:
+                self._grid_resize_restore_active = False
+                return
+            previous = self.list_widget.blockSignals(True)
+            self.list_widget.setCurrentItem(item)
+            self.list_widget.blockSignals(previous)
+
+            target_path = item.data(Qt.ItemDataRole.UserRole)
+            use_anchor = (
+                self._grid_restore_anchor_valid and
+                target_path and
+                os.path.normpath(target_path) == self._grid_restore_anchor_path
+            )
+
+            if not use_anchor:
+                hint = (
+                    QAbstractItemView.ScrollHint.PositionAtTop
+                    if top else
+                    QAbstractItemView.ScrollHint.EnsureVisible
+                )
+                self.list_widget.scrollToItem(item, hint)
+                self._grid_resize_restore_active = False
+                return
+
+            try:
+                target_index = self.current_file_list.index(os.path.normpath(target_path))
+            except ValueError:
+                target_index = self.list_widget.row(item)
+
+            cols = max(1, self._grid_column_count())
+            target_row = max(0, target_index // cols)
+            anchor_row = max(0, int(self._grid_restore_anchor_row))
+            row_height = max(1, self.list_widget.gridSize().height() or item.sizeHint().height())
+            desired_top_row = max(0, target_row - anchor_row)
+            reference_index = min(max(0, desired_top_row * cols), self.list_widget.count() - 1)
+            reference_item = self.list_widget.item(reference_index)
+            if reference_item is None:
+                self.list_widget.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtTop)
+                return
+
+            self.list_widget.scrollToItem(reference_item, QAbstractItemView.ScrollHint.PositionAtTop)
+            expected_top = anchor_row * row_height + self._grid_restore_anchor_row_offset
+
+            def adjust_anchor():
+                if self.stacked_widget.currentIndex() != 0:
+                    return
+                rect = self.list_widget.visualItemRect(item)
+                if not rect.isValid() or rect.height() <= 0:
+                    if top:
+                        self.list_widget.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtTop)
+                    self._grid_resize_restore_active = False
+                    return
+                sb = self.list_widget.verticalScrollBar()
+                delta = rect.top() - expected_top
+                if delta:
+                    sb.setValue(sb.value() + delta)
+                QTimer.singleShot(0, lambda: self._finalize_grid_anchor_adjust(item, expected_top, top))
+
+            QTimer.singleShot(0, adjust_anchor)
+
+        if delay > 0:
+            QTimer.singleShot(delay, apply_visibility)
+        else:
+            apply_visibility()
 
     def show_sort_menu(self):
         if not hasattr(self, "sort_menu"):
@@ -2066,6 +2877,7 @@ class MainWindow(QMainWindow):
             if f.lower().endswith(VALID_EXTENSIONS)
         ]
         self.current_loaded_folder = os.path.normpath(folder_path)
+        self.prune_thumbnail_cache_for_folder(self.current_loaded_folder, files)
         self.load_images_list(files)
     def apply_sort(self, files):
         if not files:
@@ -2082,17 +2894,41 @@ class MainWindow(QMainWindow):
             return sorted(files, key=natural_key)
 
     def start_thumbnail_loader(self):
-        if self.loader_thread and self.loader_thread.isRunning():
-            self.loader_thread.stop()
-
-        self._loading_in_progress = bool(self.current_file_list)
+        self.cancel_thumbnail_loading()
         self._loading_request_id += 1
-        thread = ThumbnailLoader(self.current_file_list)
-        thread.request_id = self._loading_request_id
-        thread.thumbnail_loaded.connect(self.add_thumbnail_item)
-        thread.finished.connect(lambda t=thread: self.on_thumbnails_load_finished(t))
-        self.loader_thread = thread
-        thread.start()
+        self._pending_thumbnail_updates = []
+        self.loader_thread = None
+
+        if not self.current_file_list:
+            self._thumbnail_session = None
+            self._loading_in_progress = False
+            return
+
+        session = ThumbnailLoadSession(self._loading_request_id)
+        self._thumbnail_session = session
+        self._thumbnail_tasks_remaining = 0
+
+        ordered_indices = self._prioritized_thumbnail_indices()
+        for idx in ordered_indices:
+            path = self.current_file_list[idx]
+            signature = self._get_file_signature(path)
+            cache_key = self._make_thumbnail_cache_key(path, signature)
+            memory_pixmap = self._get_memory_thumbnail(cache_key)
+            if memory_pixmap is not None:
+                self.add_thumbnail_item(path, memory_pixmap)
+                self._touch_thumbnail_cache_entry(cache_key)
+                continue
+
+            cache_file = self._thumbnail_cache_file(cache_key)
+            task = ThumbnailTask(session, idx, path, cache_key, cache_file, signature)
+            task.signals.result.connect(self.queue_thumbnail_update)
+            task.signals.finished.connect(self.on_thumbnail_task_finished)
+            self._thumbnail_tasks_remaining += 1
+            self.thumbnail_pool.start(task)
+
+        self._loading_in_progress = self._thumbnail_tasks_remaining > 0
+        if not self._loading_in_progress:
+            self.on_thumbnails_load_finished()
 
 
     # ---------- 加载图片列表 ----------
@@ -2114,6 +2950,8 @@ class MainWindow(QMainWindow):
 
         self.current_file_list = self.apply_sort(unique_paths)
         self.list_widget.clear()
+        self._grid_items_by_path = {}
+        self._blank_thumbnail_icon = QIcon()
 
         if self._pending_restore_path is None and previous_current in self.current_file_list:
             self._pending_restore_path = previous_current
@@ -2125,42 +2963,52 @@ class MainWindow(QMainWindow):
         else:
             self.current_index = -1
 
+        if self._grid_restore_anchor_valid:
+            anchor_target = self._pending_restore_path or self.current_image_path
+            if anchor_target and anchor_target in self.current_file_list:
+                self._grid_restore_anchor_path = os.path.normpath(anchor_target)
+            else:
+                self._grid_restore_anchor_valid = False
+                self._grid_restore_anchor_path = None
+
         self.set_grid_placeholder_state(not bool(self.current_file_list))
         self.update_fab_visibility()
 
         if not self.current_file_list:
-            if self.loader_thread and self.loader_thread.isRunning():
-                self.loader_thread.stop()
+            self.cancel_thumbnail_loading()
             self.loader_thread = None
-            self._loading_in_progress = False
             self.toast_label.hide()
             self.show_grid()
             self.update_action_states()
             QTimer.singleShot(0, self.update_grid_for_width)
             return
 
-        self.start_thumbnail_loader()
-        self.show_toast(self.tr('loading'), duration=0)
-
+        self._populate_grid_placeholders()
         self.show_grid()
         self.update_fab_visibility()
         self.update_action_states()
         QTimer.singleShot(0, self.update_grid_for_width)
 
+        self.start_thumbnail_loader()
+        if self._loading_in_progress:
+            self.show_toast(self.tr('loading'), duration=0)
+        else:
+            self.toast_label.hide()
 
 
     def on_thumbnails_load_finished(self, thread=None):
-        if thread is None:
-            return
-        if thread is not self.loader_thread:
-            return
-        if getattr(thread, 'request_id', None) != self._loading_request_id:
+        if self._thumbnail_session is not None and self._thumbnail_session.cancelled:
             return
 
         self._loading_in_progress = False
+        self.loader_thread = None
         restored_item = None
-        if self._pending_restore_path and self._pending_restore_path in self.current_file_list:
-            idx = self.current_file_list.index(self._pending_restore_path)
+        restore_path = self._pending_restore_path
+        if restore_path is None and self.current_image_path in self.current_file_list:
+            restore_path = self.current_image_path
+
+        if restore_path and restore_path in self.current_file_list:
+            idx = self.current_file_list.index(restore_path)
             if 0 <= idx < self.list_widget.count():
                 self.current_index = idx
                 restored_item = self.list_widget.item(idx)
@@ -2176,42 +3024,148 @@ class MainWindow(QMainWindow):
 
         self._pending_restore_path = None
         self._pending_restore_selected_paths = []
+        self._thumbnail_session = None
+        self.save_thumbnail_cache_index()
+        self.schedule_thumbnail_cache_cleanup(THUMBNAIL_IDLE_CLEANUP_DELAY_MS)
 
         if self.stacked_widget.currentIndex() == 0:
             if restored_item is not None:
-                QTimer.singleShot(
-                    0,
-                    lambda item=restored_item: self.list_widget.scrollToItem(
-                        item, QAbstractItemView.ScrollHint.EnsureVisible
-                    ),
-                )
+                self.schedule_grid_restore(80)
             self.show_toast(self.tr('load_done'), duration=2000)
         else:
             self.toast_label.hide()
 
 
-
-
-
     def add_thumbnail_item(self, path, pixmap):
-        if self.sender() != getattr(self, 'loader_thread', None):
+        item = self._grid_items_by_path.get(path)
+        if item is None:
             return
-
-        filename = os.path.basename(path)
-        if len(filename) > 30:
-            filename_display = filename[:18] + "..." + filename[-8:]
-        else:
-            filename_display = filename
-
-        item = QListWidgetItem(filename_display)
         item.setIcon(QIcon(pixmap))
-        item.setData(Qt.ItemDataRole.UserRole, path)
-        item.setSizeHint(self.list_widget.gridSize())
-        self.list_widget.addItem(item)
-
 
     def on_thumbnail_clicked(self, item):
         self.show_image_detail(item.data(Qt.ItemDataRole.UserRole))
+
+    def _detail_metadata_cache_key(self, path):
+        signature = self._get_file_signature(path)
+        if not signature:
+            return None
+        return (os.path.normpath(path), signature[0], signature[1])
+
+    def _remember_detail_metadata(self, cache_key, metadata):
+        if not cache_key:
+            return metadata
+        self._detail_metadata_cache[cache_key] = metadata
+        if len(self._detail_metadata_cache) > 64:
+            oldest_key = next(iter(self._detail_metadata_cache))
+            self._detail_metadata_cache.pop(oldest_key, None)
+        return metadata
+
+    def _load_detail_metadata(self, path, pil_image=None):
+        cache_key = self._detail_metadata_cache_key(path)
+        if pil_image is None and cache_key in self._detail_metadata_cache:
+            return self._detail_metadata_cache[cache_key]
+        if pil_image is not None:
+            metadata = self.parse_metadata(pil_image, path, pil_image.width, pil_image.height)
+            return self._remember_detail_metadata(cache_key, metadata)
+        with Image.open(path) as img:
+            metadata = self.parse_metadata(img, path, img.width, img.height)
+        return self._remember_detail_metadata(cache_key, metadata)
+
+    def _render_detail_fit_pixmap(self, pil_image):
+        view_w = self.image_scroll.viewport().width()
+        view_h = self.image_scroll.viewport().height()
+        if view_w <= 50:
+            return None
+        dpr = self.image_label.devicePixelRatio()
+        target_w = int((view_w - 40) * dpr)
+        target_h = int((view_h - 40) * dpr)
+        pixmap = pil2pixmap(pil_image)
+        scaled = pixmap.scaled(
+            target_w,
+            target_h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        scaled.setDevicePixelRatio(dpr)
+        return scaled
+
+    def _load_detail_bundle(self, path):
+        try:
+            with Image.open(path) as img:
+                metadata = self._load_detail_metadata(path, pil_image=img)
+                scaled = self._render_detail_fit_pixmap(img)
+            return metadata, scaled
+        except Exception:
+            return None, None
+
+    def _is_animation_candidate(self, path):
+        return os.path.splitext(path)[1].lower() in ('.gif', '.webp')
+
+    def stop_detail_animation(self):
+        if hasattr(self, 'detail_animation_timer'):
+            self.detail_animation_timer.stop()
+        image = getattr(self, 'detail_animation_image', None)
+        if image is not None:
+            try:
+                image.close()
+            except Exception:
+                pass
+        self.detail_animation_image = None
+        self.detail_animation_path = None
+        self.detail_animation_frame = 0
+
+    def _animation_frame_duration(self, image):
+        try:
+            duration = int(image.info.get('duration', 100) or 100)
+        except Exception:
+            duration = 100
+        return max(20, min(1000, duration))
+
+    def _render_animation_frame(self):
+        image = self.detail_animation_image
+        if image is None or self.detail_animation_path != self.current_image_path:
+            return False
+        try:
+            scaled = self._render_detail_fit_pixmap(image.convert('RGBA'))
+            if scaled is None or scaled.isNull():
+                return False
+            self.image_label.setPixmap(scaled)
+            return True
+        except Exception:
+            return False
+
+    def start_detail_animation(self, path, image):
+        self.stop_detail_animation()
+        if not getattr(image, 'is_animated', False) or getattr(image, 'n_frames', 1) <= 1:
+            return False
+        try:
+            image.seek(0)
+        except Exception:
+            return False
+        self.detail_animation_image = image
+        self.detail_animation_path = os.path.normpath(path)
+        self.detail_animation_frame = 0
+        if not self._render_animation_frame():
+            self.stop_detail_animation()
+            return False
+        self.detail_animation_timer.start(self._animation_frame_duration(image))
+        return True
+
+    def advance_detail_animation_frame(self):
+        image = self.detail_animation_image
+        if image is None or self.detail_animation_path != self.current_image_path:
+            self.stop_detail_animation()
+            return
+        try:
+            frame_count = max(1, getattr(image, 'n_frames', 1))
+            self.detail_animation_frame = (self.detail_animation_frame + 1) % frame_count
+            image.seek(self.detail_animation_frame)
+            if self._render_animation_frame():
+                self.detail_animation_timer.start(self._animation_frame_duration(image))
+            else:
+                self.stop_detail_animation()
+        except Exception:
+            self.stop_detail_animation()
 
     # ---------- 显示详情 ----------
     def show_image_detail(self, path, keep_view=False):
@@ -2221,8 +3175,13 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'fab_container'):
             self.fab_container.hide()
         path = os.path.normpath(path)
+        if self.stacked_widget.currentIndex() == 0:
+            self.capture_grid_restore_anchor()
+        elif self._grid_restore_anchor_valid and path in self.current_file_list:
+            self._grid_restore_anchor_path = path
         self.current_image_path = path
         if not keep_view:
+            self.stop_detail_animation()
             self.image_label.clear()
 
         self.stacked_widget.setCurrentIndex(1)
@@ -2242,14 +3201,29 @@ class MainWindow(QMainWindow):
         self.update_action_states()
 
         if not keep_view:
-            QTimer.singleShot(50, lambda: self.display_image_fit(path))
-
-        try:
-            with Image.open(path) as img:
-                metadata = self.parse_metadata(img, path, img.width, img.height)
+            if self._is_animation_candidate(path):
+                try:
+                    metadata = self._load_detail_metadata(path)
+                    self.metadata_panel.set_metadata(metadata)
+                except Exception:
+                    self.metadata_panel.clear_metadata()
+                QTimer.singleShot(50, lambda: self.display_image_fit(path))
+            else:
+                metadata, scaled = self._load_detail_bundle(path)
+                if metadata is not None:
+                    self.metadata_panel.set_metadata(metadata)
+                else:
+                    self.metadata_panel.clear_metadata()
+                if scaled is not None:
+                    self.image_label.setPixmap(scaled)
+                else:
+                    QTimer.singleShot(50, lambda: self.display_image_fit(path))
+        else:
+            try:
+                metadata = self._load_detail_metadata(path)
                 self.metadata_panel.set_metadata(metadata)
-        except Exception:
-            self.metadata_panel.clear_metadata()
+            except Exception:
+                self.metadata_panel.clear_metadata()
 
 
     def display_image_fit(self, path):
@@ -2259,31 +3233,35 @@ class MainWindow(QMainWindow):
             if view_w <= 50:
                 QTimer.singleShot(100, lambda: self.display_image_fit(path))
                 return
-            
-            # --- High DPI Fix Start ---
+
+            self.stop_detail_animation()
             dpr = self.image_label.devicePixelRatio()
-            # Calculate physical pixels needed
             target_w = int((view_w - 40) * dpr)
             target_h = int((view_h - 40) * dpr)
-            
-            with Image.open(path) as img:
+
+            img = Image.open(path)
+            if getattr(img, 'is_animated', False) and getattr(img, 'n_frames', 1) > 1:
+                if self.start_detail_animation(path, img):
+                    return
+                img.close()
+                return
+
+            with img:
                 pixmap = pil2pixmap(img)
-                # Scale to physical pixels
                 scaled = pixmap.scaled(
                     target_w,
                     target_h,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation
                 )
-                # Tell pixmap it is high-dpi (so it draws smaller in logical coords, matching viewport)
                 scaled.setDevicePixelRatio(dpr)
                 self.image_label.setPixmap(scaled)
-            # --- High DPI Fix End ---
-        except:
+        except Exception:
             pass
 
     # ---------- 回到网格 ----------
     def show_grid(self):
+        self.stop_detail_animation()
         self.image_label.clear()
         self.stacked_widget.setCurrentIndex(0)
         QTimer.singleShot(0, self.update_detail_splitter_sizes)
@@ -2291,26 +3269,18 @@ class MainWindow(QMainWindow):
 
         if not self.current_file_list:
             self.set_grid_placeholder_state(True)
-            self.toast_label.hide()
+            self.hide_toast()
         elif self._loading_in_progress:
             self.set_grid_placeholder_state(False)
             self.show_toast(self.tr('loading'), duration=0)
         else:
             self.set_grid_placeholder_state(False)
-            self.toast_label.hide()
+            self.hide_toast()
 
         self.shortcut_prev.setEnabled(False)
         self.shortcut_next.setEnabled(False)
 
-        if 0 <= self.current_index < self.list_widget.count():
-            item = self.list_widget.item(self.current_index)
-            self.list_widget.setCurrentItem(item)
-            QTimer.singleShot(
-                50,
-                lambda: self.list_widget.scrollToItem(
-                    item, QAbstractItemView.ScrollHint.EnsureVisible
-                ),
-            )
+        self.schedule_grid_restore(80)
 
         self.update_action_states()
         QTimer.singleShot(0, self.update_grid_for_width)
@@ -2341,6 +3311,9 @@ class MainWindow(QMainWindow):
         self.list_widget.setGridSize(new_size)
         for i in range(self.list_widget.count()):
             self.list_widget.item(i).setSizeHint(new_size)
+
+        if self.stacked_widget.currentIndex() == 0:
+            self.schedule_grid_restore(80)
 
 
     # ---------- 主题 + 元数据解析 ----------
@@ -2510,18 +3483,30 @@ class MainWindow(QMainWindow):
                 for ref_key in ('noise', 'sampler', 'sigmas', 'latent_image', 'model', 'vae', 'guider'):
                     collect_from_node(get_node(sampler_inputs.get(ref_key)))
 
-            if not pos or not neg:
-                clip_texts = []
-                for _, node in data.items():
-                    if 'cliptextencode' in node.get('class_type', '').lower():
-                        prompt_text = (node.get('inputs', {}) or {}).get('text', '')
-                        if isinstance(prompt_text, str) and prompt_text.strip():
-                            clip_texts.append(prompt_text.strip())
+            clip_texts = []
+            titled_pos = ""
+            titled_neg = ""
+            for _, node in data.items():
+                if 'cliptextencode' in node.get('class_type', '').lower():
+                    prompt_text = (node.get('inputs', {}) or {}).get('text', '')
+                    if isinstance(prompt_text, str) and prompt_text.strip():
+                        prompt_text = prompt_text.strip()
+                        clip_texts.append(prompt_text)
+                        title = ((node.get('_meta') or {}).get('title') or '').lower()
+                        if 'positive' in title and not titled_pos:
+                            titled_pos = prompt_text
+                        elif 'negative' in title and not titled_neg:
+                            titled_neg = prompt_text
 
-                if not pos and clip_texts:
-                    pos = clip_texts[0]
-                if not neg and len(clip_texts) > 1:
-                    neg = clip_texts[-1]
+            if titled_pos:
+                pos = titled_pos
+            if titled_neg:
+                neg = titled_neg
+
+            if not pos and clip_texts:
+                pos = clip_texts[0]
+            if not neg and len(clip_texts) > 1:
+                neg = clip_texts[-1]
 
             if (not pos) and qwen_pos_candidate:
                 pos = qwen_pos_candidate
@@ -2642,6 +3627,36 @@ class MainWindow(QMainWindow):
 
         return pairs
 
+    def _metadata_text_value(self, value):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, bytes):
+            for encoding in ('utf-8', 'utf-16', 'latin-1'):
+                try:
+                    text = value.decode(encoding, errors='ignore')
+                    if text:
+                        return text
+                except Exception:
+                    continue
+        return ""
+
+    def _find_comfy_prompt_text(self, img):
+        sources = []
+        try:
+            sources.extend((img.info or {}).values())
+        except Exception:
+            pass
+        try:
+            sources.extend(img.getexif().values())
+        except Exception:
+            pass
+
+        for value in sources:
+            text = self._metadata_text_value(value).strip()
+            if text.startswith('prompt:'):
+                return text[len('prompt:'):]
+        return ""
+
     def parse_metadata(self, img, path, w, h):
         info = img.info
         filename = os.path.basename(path)
@@ -2665,6 +3680,11 @@ class MainWindow(QMainWindow):
 
         if 'prompt' in info:
             metadata.update(self.parse_comfy_data(info['prompt']))
+            return metadata
+
+        comfy_prompt = self._find_comfy_prompt_text(img)
+        if comfy_prompt:
+            metadata.update(self.parse_comfy_data(comfy_prompt))
             return metadata
 
         if 'parameters' in info:
