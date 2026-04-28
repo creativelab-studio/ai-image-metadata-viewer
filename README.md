@@ -37,6 +37,8 @@ Prebuilt Windows executable is available on the [Releases](https://github.com/si
 - Folder browsing support
 - Folder refresh support
 - Drag & drop images or folders
+- GIF and WebP image support
+- Animated GIF and animated WebP playback in the detail view
 - Centered drag-and-drop start view with quick open actions
 - Floating action menu for sort and refresh
 - Sorting options: Name / Creation Time
@@ -44,6 +46,8 @@ Prebuilt Windows executable is available on the [Releases](https://github.com/si
 - Safe delete (moves images to system Recycle Bin)
 - Custom delete confirmation dialog with default confirm action and optional "Don't ask again"
 - Thumbnail loading status feedback
+- Faster thumbnail loading with memory and disk caching
+- Automatic thumbnail cache cleanup for deleted or replaced images
 - Card-based metadata detail panel
 - Structured summary for filename, resolution, and current image position
 - Dedicated sections for Model, LoRA, Positive, Negative, and Parameters
@@ -110,6 +114,24 @@ pyinstaller --noconsole --onefile --icon=app.ico --add-data "app.ico;." --versio
 ---
 
 ## Version
+
+### v1.2.2
+
+Image format and loading performance update.
+
+New:
+- Added GIF image support
+- Added animated GIF and animated WebP playback in the detail view
+- Added WebP metadata reading for ComfyUI generation data stored in EXIF
+
+Improvements:
+- Improved Positive and Negative prompt parsing for ComfyUI WebP images
+- Improved thumbnail loading performance with memory and disk caching
+- Improved thumbnail cache cleanup for externally deleted or replaced images
+- Improved multi-instance cache safety when running more than one viewer
+- Refined drag-and-drop responsiveness and large-folder loading behavior
+
+---
 
 ### v1.2.1
 
