@@ -115,7 +115,9 @@ pyinstaller --noconsole --onefile --icon=app.ico --add-data "app.ico;." --versio
 
 ## Version
 
-### Unreleased
+### v1.2.3
+
+Metadata parsing accuracy and detail-view interaction update.
 
 New:
 - Added floating previous and next controls in the image detail view for faster mouse navigation
