@@ -100,7 +100,7 @@ class NativeTheme:
 # --- Translation dictionary ---
 TRANSLATIONS = {
     'en': {
-        'title': "AI Image Metadata Viewer (Basic) v1.2.2",
+        'title': "AI Image Metadata Viewer (Basic) v1.2.3",
         'open_file': "Open Image",
         'open_folder': "Open Folder",
         'clear': "Clear All",
@@ -136,7 +136,7 @@ TRANSLATIONS = {
         'refresh': "Refresh folder",
     },
     'cn': {
-        'title': "AI \u56fe\u7247\u5143\u6570\u636e\u67e5\u770b\u5668 (\u57fa\u7840\u7248) v1.2.2",
+        'title': "AI \u56fe\u7247\u5143\u6570\u636e\u67e5\u770b\u5668 (\u57fa\u7840\u7248) v1.2.3",
         'open_file': "\u6253\u5f00\u56fe\u7247",
         'open_folder': "\u6253\u5f00\u6587\u4ef6\u5939",
         'clear': "\u6e05\u7a7a\u5217\u8868",
@@ -172,7 +172,7 @@ TRANSLATIONS = {
         'refresh': "\u5237\u65b0\u6587\u4ef6\u5939",
     },
     'tc': {
-        'title': "AI \u5716\u7247\u5143\u6578\u64da\u67e5\u770b\u5668 (\u57fa\u790e\u7248) v1.2.2",
+        'title': "AI \u5716\u7247\u5143\u6578\u64da\u67e5\u770b\u5668 (\u57fa\u790e\u7248) v1.2.3",
         'open_file': "\u6253\u958b\u5716\u7247",
         'open_folder': "\u6253\u958b\u8cc7\u6599\u593e",
         'clear': "\u6e05\u7a7a\u5217\u8868",
@@ -208,7 +208,7 @@ TRANSLATIONS = {
         'refresh': "\u91cd\u65b0\u6574\u7406\u8cc7\u6599\u593e",
     },
     'jp': {
-        'title': "AI \u753b\u50cf\u30e1\u30bf\u30c7\u30fc\u30bf\u30d3\u30e5\u30fc\u30a2 (Basic) v1.2.2",
+        'title': "AI \u753b\u50cf\u30e1\u30bf\u30c7\u30fc\u30bf\u30d3\u30e5\u30fc\u30a2 (Basic) v1.2.3",
         'open_file': "\u753b\u50cf\u3092\u958b\u304f",
         'open_folder': "\u30d5\u30a9\u30eb\u30c0\u3092\u958b\u304f",
         'clear': "\u30ea\u30b9\u30c8\u3092\u30af\u30ea\u30a2",
@@ -244,7 +244,7 @@ TRANSLATIONS = {
         'refresh': "\u30d5\u30a9\u30eb\u30c0\u3092\u66f4\u65b0",
     },
     'kr': {
-        'title': "AI \uc774\ubbf8\uc9c0 \uba54\ud0c0\ub370\uc774\ud130 \ubdf0\uc5b4 (Basic) v1.2.2",
+        'title': "AI \uc774\ubbf8\uc9c0 \uba54\ud0c0\ub370\uc774\ud130 \ubdf0\uc5b4 (Basic) v1.2.3",
         'open_file': "\uc774\ubbf8\uc9c0 \uc5f4\uae30",
         'open_folder': "\ud3f4\ub354 \uc5f4\uae30",
         'clear': "\ubaa9\ub85d \uc9c0\uc6b0\uae30",
@@ -1468,7 +1468,7 @@ class MainWindow(QMainWindow):
         self.dark_mode = self.settings.value("theme", True, type=bool)
         self.sort_mode = self.settings.value("sort_mode", "name_natural", type=str)
 
-        self.setWindowTitle("AI Image Metadata Viewer (Basic) v1.2.2")
+        self.setWindowTitle("AI Image Metadata Viewer (Basic) v1.2.3")
         icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.ico")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
