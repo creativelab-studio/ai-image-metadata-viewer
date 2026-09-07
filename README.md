@@ -115,6 +115,22 @@ pyinstaller --noconsole --onefile --icon=app.ico --add-data "app.ico;." --versio
 
 ## Version
 
+### Unreleased
+
+New:
+- Added floating previous and next controls in the image detail view for faster mouse navigation
+- Added responsive layouts for long prompts and long parameter values
+- Added structured model and LoRA details from Civitai resource metadata
+
+Improvements:
+- Improved ComfyUI metadata parsing for newer workflows, including Krea2 and Z-Image output
+- Fixed Positive and Negative prompt extraction when a workflow uses conditioning passthrough or empty-conditioning nodes
+- LoRA information now reflects the active generation path and does not show a LoRA disabled by a workflow switch
+- Improved Model, LoRA, and parameter presentation with cleaner structured cards and consistent row heights
+- Improved detail-view navigation, selection restoration, and metadata layout updates during resizing
+
+---
+
 ### v1.2.2
 
 Image format and loading performance update.

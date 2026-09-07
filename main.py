@@ -18,21 +18,22 @@ from PyQt6.QtWidgets import (
     QSplitter, QFileDialog,
     QStackedWidget, QScrollArea, QToolBar, QMessageBox,
     QFrame, QPushButton, QSizePolicy, QAbstractItemView,
-    QToolButton, QMenu, QGridLayout, QDialog, QCheckBox
+    QToolButton, QMenu, QGridLayout, QDialog, QCheckBox,
+    QAbstractScrollArea, QTextEdit, QGraphicsOpacityEffect
 )
-from PyQt6.QtCore import QPoint
+from PyQt6.QtCore import QPoint, QPointF, QPropertyAnimation
 from PyQt6.QtGui import (
     QPixmap, QIcon, QAction, QActionGroup, QDragEnterEvent, QDropEvent,
     QImage, QResizeEvent, QColor, QPainter, QShowEvent,
-    QShortcut, QKeySequence, QGuiApplication, QFontMetrics
+    QShortcut, QKeySequence, QGuiApplication, QFontMetrics, QTextOption, QPen
 )
 from PyQt6.QtCore import (
     Qt, QSize, QThread, pyqtSignal, QTimer, QSettings,
-    QObject, QRunnable, QThreadPool, QStandardPaths, QLockFile
+    QObject, QRunnable, QThreadPool, QStandardPaths, QLockFile, QEvent
 )
 
 
-# --- 异常捕获 ---
+# --- Exception handling ---
 def exception_hook(exctype, value, tb):
     err_msg = "".join(traceback.format_exception(exctype, value, tb))
     print(err_msg)
@@ -62,7 +63,7 @@ THUMBNAIL_IDLE_CLEANUP_DELAY_MS = 8000
 
 
 # ==========================================
-# --- 🎨 现代原生风格配色 (Modern Native) ---
+# --- Modern native theme colors ---
 # ==========================================
 class NativeTheme:
     FONT_FAMILY = "'Segoe UI', 'Microsoft YaHei', sans-serif"
@@ -96,7 +97,7 @@ class NativeTheme:
     }
 
 
-# --- 多语言字典 ---
+# --- Translation dictionary ---
 TRANSLATIONS = {
     'en': {
         'title': "AI Image Metadata Viewer (Basic) v1.2.2",
@@ -435,7 +436,7 @@ class ThumbnailTask(QRunnable):
 
 
 class GridListWidget(QListWidget):
-    """网格视图用的列表，自定义滚轮步长：每次滚轮滚动两行"""
+    """Grid view list with a custom wheel step of two rows per scroll."""
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
         if delta == 0:
@@ -458,14 +459,27 @@ class GridListWidget(QListWidget):
             QTimer.singleShot(0, lambda value=previous_value: bar.setValue(value))
 
 
-# --- 自定义滚轮行为的图片滚动区域：在图片区域用滚轮切图 ---
+# --- Image scroll area with custom wheel behavior for switching images ---
 class ImageScrollArea(QScrollArea):
     def __init__(self, owner=None, parent=None):
         super().__init__(parent)
-        self.owner = owner  # MainWindow
+        self.owner = owner
+
+    def eventFilter(self, watched, event):
+        if watched is self.widget() or watched is self.viewport():
+            if self.owner and event.type() in (
+                event.Type.Enter,
+                event.Type.MouseMove,
+                event.Type.MouseButtonPress,
+                event.Type.MouseButtonRelease,
+                event.Type.Wheel,
+            ):
+                self.owner.show_detail_nav_buttons()
+        return super().eventFilter(watched, event)
 
     def wheelEvent(self, event):
         if self.owner and self.owner.stacked_widget.currentIndex() == 1:
+            self.owner.show_detail_nav_buttons()
             delta = event.angleDelta().y()
             if delta > 0:
                 self.owner.show_prev_image()
@@ -624,6 +638,85 @@ class DeleteConfirmDialog(QDialog):
         return self.skip_checkbox.isChecked()
 
 
+def _add_wrap_opportunities(escaped_text: str, max_token_length: int = 110):
+    break_html = "&#8203;"
+    rendered = escaped_text.replace("\n", "<br>")
+    for token in (",", ";", "|", ">"):
+        rendered = rendered.replace(token, token + break_html)
+    rendered = rendered.replace("&lt;lora:", break_html + "&lt;lora:")
+
+    def split_long_word(match):
+        word = match.group(0)
+        return break_html.join(word[i:i + max_token_length] for i in range(0, len(word), max_token_length))
+
+    return re.sub(r"[A-Za-z0-9_]{%d,}" % max_token_length, split_long_word, rendered)
+
+
+def wrap_friendly_html(text: str, max_token_length: int = 110):
+    return _add_wrap_opportunities(html.escape(text or ""), max_token_length)
+
+
+class AutoHeightTextEdit(QTextEdit):
+    def __init__(self, object_name: str, line_height: float = 1.5, parent=None):
+        super().__init__(parent)
+        self.setObjectName(object_name)
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setSizeAdjustPolicy(QAbstractScrollArea.SizeAdjustPolicy.AdjustToContents)
+        self.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumWidth(0)
+        self.document().setDocumentMargin(0)
+        self.document().defaultTextOption().setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self._line_height = line_height
+        self._raw_text = ""
+
+    def set_rich_text(self, text: str):
+        self._raw_text = text or ""
+        self.refresh_height()
+
+    def refresh_height(self):
+        width = self._available_text_width()
+        if width < 80:
+            return
+        self.document().setTextWidth(width)
+        body = wrap_friendly_html(self._raw_text)
+        self.setHtml(f"<div style='text-align:left; line-height:{self._line_height};'>{body}</div>")
+        self.document().setTextWidth(width)
+        height = int(self.document().size().height()) + 2
+        self.setFixedHeight(max(24, height))
+        self.updateGeometry()
+
+    def _available_text_width(self):
+        candidates = []
+        inner_margin = 0
+        widget = self.parentWidget()
+        while widget is not None:
+            width = widget.contentsRect().width()
+            layout = QWidget.layout(widget)
+            if layout:
+                margins = layout.contentsMargins()
+                margin_w = margins.left() + margins.right()
+            else:
+                margin_w = 0
+            available = width - margin_w - inner_margin
+            if widget.objectName() == "metadata_panel_root" and available >= 160:
+                return max(80, available)
+            if available >= 160:
+                candidates.append(available)
+            inner_margin += margin_w
+            widget = widget.parentWidget()
+        if candidates:
+            return max(80, max(candidates))
+        return max(80, self.viewport().width() or self.width())
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.refresh_height()
+
+
 class PromptTextBox(QFrame):
     def __init__(self, object_name: str, parent=None):
         super().__init__(parent)
@@ -635,20 +728,20 @@ class PromptTextBox(QFrame):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(0)
 
-        self.label = QLabel("", self)
-        self.label.setObjectName("prompt_text_label")
-        self.label.setWordWrap(True)
-        self.label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self.label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.label.setTextFormat(Qt.TextFormat.RichText)
-        self.label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
-        self.label.setMinimumWidth(0)
-        layout.addWidget(self.label)
+        self.editor = AutoHeightTextEdit("prompt_text_editor", line_height=1.55, parent=self)
+        layout.addWidget(self.editor)
 
     def set_text(self, text: str):
-        escaped = html.escape(text or "").replace("\n", "<br>")
-        self.label.setText(f"<div style='text-align:justify; line-height:1.55;'>{escaped}</div>")
+        self.editor.set_rich_text(text or "")
         self.updateGeometry()
+
+    def refresh_text_layout(self):
+        self.editor.refresh_height()
+        self.updateGeometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.refresh_text_layout()
 
 
 class MetadataCard(QFrame):
@@ -883,21 +976,81 @@ class KeyValueItem(QFrame):
     def __init__(self, key: str, value: str, parent=None):
         super().__init__(parent)
         self.setObjectName("kv_item")
-        layout = QHBoxLayout(self)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout = QGridLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(8)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(4)
+        layout.setColumnStretch(0, 5)
+        layout.setColumnStretch(1, 5)
 
         key_label = QLabel(key, self)
         key_label.setObjectName("kv_key")
         key_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(key_label)
+        key_label.setWordWrap(True)
+        key_label.setMinimumWidth(0)
+        layout.addWidget(key_label, 0, 0)
 
         value_label = QLabel(value, self)
         value_label.setObjectName("kv_value")
         value_label.setWordWrap(True)
         value_label.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight)
         value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(value_label, 1)
+        value_label.setMinimumWidth(0)
+        layout.addWidget(value_label, 0, 1)
+
+
+def is_long_parameter(key: str, value: str):
+    key_lower = str(key).strip().lower()
+    value_text = str(value or "").strip()
+    if not value_text:
+        return False
+    long_keys = {
+        "prompt",
+        "positive prompt",
+        "negative prompt",
+        "hires prompt",
+        "adetailer prompt",
+        "adetailer negative prompt",
+        "lora hashes",
+        "details",
+        "raw",
+        "raw parameters",
+    }
+    if key_lower in long_keys:
+        return True
+    if len(value_text) > 110:
+        return True
+    prompt_markers = (",", "(", ")", "<lora:", "masterpiece", "best quality", "BREAK")
+    return len(value_text) > 60 and sum(marker in value_text for marker in prompt_markers) >= 2
+
+
+class LongParameterItem(QFrame):
+    def __init__(self, key: str, value: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("long_param_item")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout = QVBoxLayout(self)
+        layout.setSizeConstraint(QVBoxLayout.SizeConstraint.SetMinimumSize)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(8)
+
+        key_label = QLabel(key, self)
+        key_label.setObjectName("long_param_key")
+        key_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(key_label)
+
+        self.value_editor = AutoHeightTextEdit("long_param_editor", line_height=1.45, parent=self)
+        self.value_editor.set_rich_text(value)
+        layout.addWidget(self.value_editor)
+
+    def refresh_text_layout(self):
+        self.value_editor.refresh_height()
+        self.updateGeometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.refresh_text_layout()
 
 
 class ParametersCard(MetadataCard):
@@ -907,12 +1060,14 @@ class ParametersCard(MetadataCard):
         self.grid_widget = QWidget(self.body)
         self.grid_widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         self.grid = QGridLayout(self.grid_widget)
+        self.grid.setSizeConstraint(QGridLayout.SizeConstraint.SetMinimumSize)
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setHorizontalSpacing(10)
         self.grid.setVerticalSpacing(10)
         self.body_layout.addWidget(self.grid_widget)
         self._pairs = []
         self._current_cols = 2
+        self._short_row_count = 0
 
     def _calc_cols(self):
         return 2
@@ -938,45 +1093,74 @@ class ParametersCard(MetadataCard):
         for col in range(cols):
             self.grid.setColumnStretch(col, 1)
 
+        short_pairs = []
+        long_pairs = []
+        for key, value in self._pairs:
+            if is_long_parameter(key, value):
+                long_pairs.append((key, value))
+            else:
+                short_pairs.append((key, value))
+
         row = 0
         col = 0
-        row_heights = {}
-        for key, value in self._pairs:
+        self._short_row_count = 0
+        for key, value in short_pairs:
             item = KeyValueItem(str(key), str(value), self.grid_widget)
-            hint_h = item.sizeHint().height()
-            key_lower = str(key).strip().lower()
-            if key_lower in ('details', 'raw', 'raw parameters'):
-                if col != 0:
-                    row += 1
-                    col = 0
-                self.grid.addWidget(item, row, 0, 1, cols)
-                row_heights[row] = max(row_heights.get(row, 0), hint_h)
-                row += 1
-                continue
-
             self.grid.addWidget(item, row, col)
-            row_heights[row] = max(row_heights.get(row, 0), hint_h)
             col += 1
             if col >= cols:
                 col = 0
                 row += 1
+                self._short_row_count += 1
 
-        row_count = row + (1 if col != 0 else 0)
-        if row_count <= 0:
-            min_height = 0
-        else:
-            content_height = sum(row_heights.get(i, 0) for i in range(row_count))
-            min_height = content_height + max(0, row_count - 1) * self.grid.verticalSpacing()
+        if col != 0:
+            row += 1
+            self._short_row_count += 1
 
-        self.grid_widget.setMinimumHeight(min_height)
-        self.body.setMinimumHeight(min_height)
+        for key, value in long_pairs:
+            item = LongParameterItem(str(key), str(value), self.grid_widget)
+            self.grid.addWidget(item, row, 0, 1, cols)
+            row += 1
+
+        self.grid_widget.setMinimumHeight(0)
+        self.body.setMinimumHeight(0)
         self.grid.invalidate()
         self.body_layout.invalidate()
+        self.grid_widget.updateGeometry()
+        self.body.updateGeometry()
+        self.updateGeometry()
+        QTimer.singleShot(0, self._sync_short_row_heights)
+        QTimer.singleShot(80, self._sync_short_row_heights)
+
+    def _sync_short_row_heights(self):
+        if not self._short_row_count:
+            return
+        cols = self._current_cols
+        for row in range(self._short_row_count):
+            widgets = []
+            for col in range(cols):
+                item = self.grid.itemAtPosition(row, col)
+                widget = item.widget() if item else None
+                if isinstance(widget, KeyValueItem):
+                    widget.setMinimumHeight(0)
+                    widgets.append(widget)
+            if not widgets:
+                continue
+            height = max(widget.sizeHint().height() for widget in widgets)
+            for widget in widgets:
+                widget.setMinimumHeight(height)
+        self.grid.invalidate()
+        self.grid_widget.updateGeometry()
+        self.updateGeometry()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._pairs and self._calc_cols() != self._current_cols:
             self._rebuild_grid(force=True)
+        else:
+            QTimer.singleShot(0, self._sync_short_row_heights)
+        for widget in self.findChildren(LongParameterItem):
+            widget.refresh_text_layout()
 
 
 class MessageCard(MetadataCard):
@@ -998,7 +1182,7 @@ class MetadataPanel(QWidget):
         self._tr = translator
 
         self.layout = QVBoxLayout(self)
-        self.layout.setContentsMargins(20, 20, 20, 20)
+        self.layout.setContentsMargins(20, 20, 20, 36)
         self.layout.setSpacing(12)
         self.layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
@@ -1093,6 +1277,18 @@ class MetadataPanel(QWidget):
         self.empty_card.setVisible(not has_metadata and bool(empty_message))
         if not has_metadata:
             self.empty_card.set_message(empty_message)
+        QTimer.singleShot(0, self.refresh_text_layouts)
+
+    def refresh_text_layouts(self):
+        for widget in self.findChildren(PromptTextBox):
+            widget.refresh_text_layout()
+        for widget in self.findChildren(LongParameterItem):
+            widget.refresh_text_layout()
+        self.updateGeometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self.refresh_text_layouts)
 
     def apply_theme(self, t, dark_mode: bool):
         panel_bg = '#ebe5da' if not dark_mode else '#191d23'
@@ -1222,11 +1418,12 @@ class MetadataPanel(QWidget):
             QFrame#prompt_view_negative {{
                 background-color: {negative_bg};
             }}
-            QLabel#prompt_text_label {{
+            QTextEdit#prompt_text_editor {{
                 color: {t['text_main']};
                 font-size: 13px;
                 font-weight: 500;
                 background: transparent;
+                border: none;
                 selection-background-color: {t['accent']};
             }}
             QFrame#kv_item {{
@@ -1245,9 +1442,24 @@ class MetadataPanel(QWidget):
                 font-size: 13px;
                 font-weight: 600;
             }}
+            QFrame#long_param_item {{
+                background-color: {chip_bg};
+                border: 1px solid {chip_edge};
+                border-radius: 13px;
+            }}
+            QLabel#long_param_key {{
+                color: {t['text_sub']};
+                font-size: 12px;
+                font-weight: 700;
+            }}
+            QTextEdit#long_param_editor {{
+                color: {t['text_main']};
+                font-size: 13px;
+                font-weight: 500;
+                background: transparent;
+                border: none;
+            }}
         """)
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -1283,6 +1495,7 @@ class MainWindow(QMainWindow):
         self._grid_restore_anchor_row_offset = 0
         self._grid_restore_anchor_cols = 1
         self._grid_resize_restore_active = False
+        self._grid_current_path = None
         self._grid_restore_timer = QTimer(self)
         self._grid_restore_timer.setSingleShot(True)
         self._grid_restore_timer.timeout.connect(lambda: self.ensure_current_grid_item_visible(top=True, delay=0))
@@ -2081,6 +2294,7 @@ class MainWindow(QMainWindow):
         self.list_widget.setWordWrap(False)
         self.list_widget.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         self.list_widget.itemDoubleClicked.connect(self.on_thumbnail_clicked)
+        self.list_widget.currentItemChanged.connect(self.on_grid_current_item_changed)
         list_page_layout.addWidget(self.list_widget)
         self.grid_body_stack.addWidget(self.list_page)
         self.grid_body_stack.setCurrentWidget(self.empty_page)
@@ -2168,47 +2382,40 @@ class MainWindow(QMainWindow):
         self.splitter.setHandleWidth(1)
 
         self.image_container = QWidget()
+        self.image_container.setMouseTracking(True)
         img_layout = QHBoxLayout(self.image_container)
         img_layout.setContentsMargins(0, 0, 0, 0)
         img_layout.setSpacing(0)
 
-        nav_btn_style = """
-            QPushButton {
-                background-color: rgba(0,0,0,0.05);
-                color: #888;
-                border: none;
-                border-radius: 22px;
-                font-family: 'Segoe UI Symbol', 'Segoe UI';
-                font-size: 18px;
-                width: 44px; height: 44px;
-                margin: 10px;
-                padding: 0px;
-                padding-bottom: 3px;
-            }
-            QPushButton:hover { background-color: rgba(0,0,0,0.1); color: #333; }
-            QPushButton:pressed { background-color: rgba(0,0,0,0.2); }
-            QPushButton:disabled { background-color: transparent; color: transparent; }
-        """
-
-        self.btn_prev = QPushButton("<")
-        self.btn_prev.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_prev.setStyleSheet(nav_btn_style)
-        self.btn_prev.clicked.connect(self.show_prev_image)
-        img_layout.addWidget(self.btn_prev)
-
         self.image_scroll = ImageScrollArea(owner=self)
+        self.image_scroll.setMouseTracking(True)
+        self.image_scroll.viewport().setMouseTracking(True)
         self.image_scroll.setWidgetResizable(True)
         self.image_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.image_label = QLabel("")
+        self.image_label.setMouseTracking(True)
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_scroll.setWidget(self.image_label)
+        self.image_label.installEventFilter(self.image_scroll)
+        self.image_scroll.viewport().installEventFilter(self.image_scroll)
+        self.image_container.installEventFilter(self)
+        self.image_scroll.installEventFilter(self)
+        self.image_scroll.viewport().installEventFilter(self)
+        self.image_label.installEventFilter(self)
         img_layout.addWidget(self.image_scroll)
 
-        self.btn_next = QPushButton(">")
-        self.btn_next.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_next.setStyleSheet(nav_btn_style)
+        self.detail_nav_hide_timer = QTimer(self)
+        self.detail_nav_hide_timer.setSingleShot(True)
+        self.detail_nav_hide_timer.timeout.connect(self.hide_detail_nav_buttons)
+        self.detail_nav_hovering_button = False
+        self.btn_prev = self.create_detail_nav_button("prev")
+        self.btn_next = self.create_detail_nav_button("next")
+        self.update_detail_nav_button_style()
+        self.btn_prev.clicked.connect(self.show_prev_image)
         self.btn_next.clicked.connect(self.show_next_image)
-        img_layout.addWidget(self.btn_next)
+        for widget in (self.btn_prev, self.btn_next):
+            widget.installEventFilter(self)
+        self.hide_detail_nav_buttons()
 
         self.splitter.addWidget(self.image_container)
 
@@ -2224,13 +2431,174 @@ class MainWindow(QMainWindow):
         self.splitter.setChildrenCollapsible(False)
         self.splitter.setStretchFactor(0, 5)
         self.splitter.setStretchFactor(1, 3)
+        self.splitter.splitterMoved.connect(lambda *_: self.refresh_metadata_text_layouts())
         layout.addWidget(self.splitter)
         self.stacked_widget.addWidget(self.detail_page)
         QTimer.singleShot(0, self.update_detail_splitter_sizes)
 
+    def create_detail_nav_button(self, direction: str) -> QPushButton:
+        button = QPushButton(self.image_container)
+        button.setObjectName("detail_floating_nav_button")
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.setFixedSize(54, 54)
+        button.setIcon(self.create_line_nav_icon(direction, 34, 3.2))
+        button.setIconSize(QSize(32, 32))
+        effect = QGraphicsOpacityEffect(button)
+        effect.setOpacity(0.0)
+        button.setGraphicsEffect(effect)
+        button._nav_opacity_effect = effect
+        button._nav_animation = QPropertyAnimation(effect, b"opacity", button)
+        button._nav_animation.setDuration(160)
+        return button
+
+    def update_detail_nav_button_style(self):
+        if not hasattr(self, "btn_prev"):
+            return
+        if self.dark_mode:
+            bg = "rgba(30, 34, 40, 152)"
+            hover = "rgba(38, 44, 51, 212)"
+            pressed = "rgba(50, 56, 66, 232)"
+            border = "rgba(122, 162, 199, 84)"
+        else:
+            bg = "rgba(236, 232, 223, 196)"
+            hover = "rgba(235, 230, 221, 232)"
+            pressed = "rgba(217, 210, 198, 245)"
+            border = "rgba(44, 93, 138, 70)"
+        style = f"""
+            QPushButton#detail_floating_nav_button {{
+                background-color: {bg};
+                border: 1px solid {border};
+                border-radius: 27px;
+                padding: 0;
+            }}
+            QPushButton#detail_floating_nav_button:hover {{
+                background-color: {hover};
+            }}
+            QPushButton#detail_floating_nav_button:pressed {{
+                background-color: {pressed};
+            }}
+            QPushButton#detail_floating_nav_button:disabled {{
+                background-color: transparent;
+                border-color: transparent;
+            }}
+        """
+        self.btn_prev.setStyleSheet(style)
+        self.btn_next.setStyleSheet(style)
+
+    def create_line_nav_icon(self, direction: str, size: int, width: float) -> QIcon:
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        pen = QPen(QColor("#ffffff"), width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+
+        center = size / 2
+        if direction == "prev":
+            painter.drawLine(QPointF(center + 4, center - 8), QPointF(center - 4, center))
+            painter.drawLine(QPointF(center - 4, center), QPointF(center + 4, center + 8))
+        else:
+            painter.drawLine(QPointF(center - 4, center - 8), QPointF(center + 4, center))
+            painter.drawLine(QPointF(center + 4, center), QPointF(center - 4, center + 8))
+
+        painter.end()
+        return QIcon(pixmap)
+
+    def position_detail_nav_buttons(self):
+        if not hasattr(self, "btn_prev"):
+            return
+        margin = 22
+        y = max(0, (self.image_container.height() - self.btn_prev.height()) // 2)
+        self.btn_prev.move(margin, y)
+        self.btn_next.move(max(margin, self.image_container.width() - self.btn_next.width() - margin), y)
+        self.btn_prev.raise_()
+        self.btn_next.raise_()
+
+    def show_detail_nav_buttons(self):
+        if not hasattr(self, "btn_prev") or self.stacked_widget.currentIndex() != 1:
+            return
+        self.position_detail_nav_buttons()
+        can_prev = self.current_index > 0
+        can_next = self.current_index < len(self.current_file_list) - 1
+        self.btn_prev.setEnabled(can_prev)
+        self.btn_next.setEnabled(can_next)
+        self.btn_prev.setVisible(can_prev)
+        self.btn_next.setVisible(can_next)
+        for button, visible in ((self.btn_prev, can_prev), (self.btn_next, can_next)):
+            if visible:
+                button._nav_opacity_effect.setOpacity(max(button._nav_opacity_effect.opacity(), 0.01))
+                anim = button._nav_animation
+                anim.stop()
+                anim.setStartValue(button._nav_opacity_effect.opacity())
+                anim.setEndValue(1.0)
+                anim.start()
+        if self.detail_nav_hovering_button:
+            self.detail_nav_hide_timer.stop()
+        else:
+            self.detail_nav_hide_timer.start(1700)
+
+    def sync_detail_nav_buttons_after_navigation(self):
+        if not hasattr(self, "btn_prev") or self.stacked_widget.currentIndex() != 1:
+            return
+        self.position_detail_nav_buttons()
+        can_prev = self.current_index > 0
+        can_next = self.current_index < len(self.current_file_list) - 1
+        for button, visible in ((self.btn_prev, can_prev), (self.btn_next, can_next)):
+            button.setEnabled(visible)
+            button.setVisible(visible)
+            button._nav_animation.stop()
+            button._nav_opacity_effect.setOpacity(1.0 if visible else 0.0)
+
+    def hide_detail_nav_buttons(self):
+        if hasattr(self, "btn_prev"):
+            for button in (self.btn_prev, self.btn_next):
+                anim = button._nav_animation
+                anim.stop()
+                anim.setStartValue(button._nav_opacity_effect.opacity())
+                anim.setEndValue(0.0)
+                try:
+                    anim.finished.disconnect()
+                except TypeError:
+                    pass
+                anim.finished.connect(lambda b=button: b.hide() if b._nav_opacity_effect.opacity() <= 0.01 else None)
+                anim.start()
+
+    def eventFilter(self, watched, event):
+        detail_nav_widgets = (
+            getattr(self, "image_container", None),
+            getattr(self, "image_scroll", None),
+            getattr(self, "image_label", None),
+            self.image_scroll.viewport() if hasattr(self, "image_scroll") else None,
+            getattr(self, "btn_prev", None),
+            getattr(self, "btn_next", None),
+        )
+        if watched in detail_nav_widgets:
+            if event.type() in (
+                QEvent.Type.Enter,
+                QEvent.Type.MouseMove,
+                QEvent.Type.MouseButtonPress,
+                QEvent.Type.MouseButtonRelease,
+                QEvent.Type.Wheel,
+            ):
+                if watched in (getattr(self, "btn_prev", None), getattr(self, "btn_next", None)):
+                    self.detail_nav_hovering_button = True
+                    self.detail_nav_hide_timer.stop()
+                self.show_detail_nav_buttons()
+            elif event.type() == QEvent.Type.Leave and watched in (getattr(self, "btn_prev", None), getattr(self, "btn_next", None)):
+                self.detail_nav_hovering_button = False
+                self.detail_nav_hide_timer.start(700)
+            elif event.type() == QEvent.Type.Leave and watched is getattr(self, "image_container", None):
+                if not self.detail_nav_hovering_button:
+                    self.detail_nav_hide_timer.start(260)
+        return super().eventFilter(watched, event)
+
     # ---------- Shortcuts ----------
     def setup_shortcuts(self):
-        # 左右键：上一张 / 下一张（默认先禁用）
+        # Left/right keys: previous/next image, disabled by default.
         self.shortcut_prev = QShortcut(QKeySequence(Qt.Key.Key_Left), self)
         self.shortcut_prev.activated.connect(self._shortcut_prev)
         self.shortcut_prev.setEnabled(False)
@@ -2240,14 +2608,14 @@ class MainWindow(QMainWindow):
         self.shortcut_next.setEnabled(False)
 
 
-        # 回车：在网格/详情间切换
+        # Enter: toggle between grid and detail views.
         self.shortcut_enter = QShortcut(QKeySequence(Qt.Key.Key_Return), self)
         self.shortcut_enter.activated.connect(self._shortcut_enter)
 
         self.shortcut_enter2 = QShortcut(QKeySequence(Qt.Key.Key_Enter), self)
         self.shortcut_enter2.activated.connect(self._shortcut_enter)
 
-        # Delete 键：删除当前图片（网格=选中，详情=当前）
+        # Delete: remove the current image in detail view or selected images in grid view.
         self.shortcut_delete = QShortcut(QKeySequence(Qt.Key.Key_Delete), self)
         self.shortcut_delete.activated.connect(self.delete_current_image)
 
@@ -2260,7 +2628,7 @@ class MainWindow(QMainWindow):
             self.show_next_image()
 
     def _shortcut_enter(self):
-        # 网格 -> 打开当前选中图片
+        # Grid -> open the currently selected image.
         if self.stacked_widget.currentIndex() == 0:
             if self.list_widget.count() == 0:
                 return
@@ -2269,7 +2637,7 @@ class MainWindow(QMainWindow):
                 item = self.list_widget.item(0)
                 self.list_widget.setCurrentItem(item)
             self.show_image_detail(item.data(Qt.ItemDataRole.UserRole))
-        # 详情 -> 返回网格
+        # Detail -> return to the grid.
         else:
             self.show_grid()
     def keyPressEvent(self, event):
@@ -2284,18 +2652,33 @@ class MainWindow(QMainWindow):
                 return
         super().keyPressEvent(event)
 
-    # ---------- 导航 ----------
+    # ---------- Navigation ----------
     def show_prev_image(self):
         if self.current_index > 0:
             self.show_image_detail(self.current_file_list[self.current_index - 1])
+            QTimer.singleShot(0, self.sync_detail_nav_buttons_after_navigation)
 
     def show_next_image(self):
         if self.current_index < len(self.current_file_list) - 1:
             self.show_image_detail(self.current_file_list[self.current_index + 1])
+            QTimer.singleShot(0, self.sync_detail_nav_buttons_after_navigation)
 
     def update_nav_buttons(self):
-        self.btn_prev.setEnabled(self.current_index > 0)
-        self.btn_next.setEnabled(self.current_index < len(self.current_file_list) - 1)
+        can_prev = self.current_index > 0
+        can_next = self.current_index < len(self.current_file_list) - 1
+        self.btn_prev.setEnabled(can_prev)
+        self.btn_next.setEnabled(can_next)
+        buttons_visible = (
+            self.detail_nav_hide_timer.isActive()
+            or self.btn_prev._nav_opacity_effect.opacity() > 0.01
+            or self.btn_next._nav_opacity_effect.opacity() > 0.01
+        )
+        if not buttons_visible:
+            self.btn_prev.setVisible(False)
+            self.btn_next.setVisible(False)
+        else:
+            self.btn_prev.setVisible(can_prev)
+            self.btn_next.setVisible(can_next)
 
     def update_action_states(self):
         has_images = bool(self.current_file_list)
@@ -2303,10 +2686,10 @@ class MainWindow(QMainWindow):
         self.action_clear.setEnabled(has_images)
         self.action_delete.setEnabled(has_current)
 
-    # ---------- 删除当前图片/选中图片 ----------
-    # ---------- 删除当前图片 ----------
+    # ---------- Delete current/selected images ----------
+    # ---------- Delete current image ----------
     def delete_current_image(self):
-        """在磁盘中删除按当前选定的图片 / 当前展示的图片。"""
+        """Delete the selected image or the currently displayed image from disk."""
         if not self.current_file_list:
             return
 
@@ -2370,7 +2753,7 @@ class MainWindow(QMainWindow):
             self.show_toast(self.tr('deleted'))
 
 
-    # ---------- 清空全部 ----------
+    # ---------- Clear all ----------
     def clear_all(self):
         self.cancel_thumbnail_loading()
         self.stop_detail_animation()
@@ -2407,7 +2790,7 @@ class MainWindow(QMainWindow):
 
 
 
-    # ---------- 多语言 / UI 文本 ----------
+    # ---------- Localization / UI text ----------
     def set_language(self, lang_code):
         self.lang = lang_code
         self.settings.setValue("language", lang_code)
@@ -2498,18 +2881,30 @@ class MainWindow(QMainWindow):
 
         self.info_scroll.setMinimumWidth(max(280, min(360, right_w)))
         self.splitter.setSizes([left_w, right_w])
+        self.refresh_metadata_text_layouts()
 
+    def refresh_metadata_text_layouts(self):
+        if hasattr(self, 'metadata_panel'):
+            if hasattr(self, 'info_scroll'):
+                viewport_width = self.info_scroll.viewport().width()
+                if viewport_width > 0:
+                    self.metadata_panel.setFixedWidth(viewport_width)
+            QTimer.singleShot(0, self.metadata_panel.refresh_text_layouts)
+            QTimer.singleShot(80, self.metadata_panel.refresh_text_layouts)
 
     # ---------- Resize ----------
     def resizeEvent(self, event: QResizeEvent):
         if self.stacked_widget.currentIndex() == 1 and self.current_image_path:
             QTimer.singleShot(0, self.update_detail_splitter_sizes)
+            QTimer.singleShot(0, self.position_detail_nav_buttons)
+            QTimer.singleShot(80, self.refresh_metadata_text_layouts)
             QTimer.singleShot(50, lambda: self.display_image_fit(self.current_image_path))
         else:
             if not self._grid_resize_restore_active:
                 self.capture_grid_restore_anchor()
                 self._grid_resize_restore_active = True
-            self.schedule_grid_restore(120)
+            self.schedule_grid_restore(160)
+            QTimer.singleShot(320, lambda: self.ensure_current_grid_item_visible(top=False, delay=0))
         QTimer.singleShot(0, self.update_grid_for_width)
         QTimer.singleShot(0, self.position_toast)
         self.position_sort_fab()
@@ -2565,7 +2960,7 @@ class MainWindow(QMainWindow):
             self._drop_handling = False
 
 
-    # ---------- 打开文件 / 文件夹 ----------
+    # ---------- Open files / folders ----------
     def open_files_dialog(self):
         files, _ = QFileDialog.getOpenFileNames(
             self,
@@ -2694,9 +3089,55 @@ class MainWindow(QMainWindow):
             if scroll:
                 self.list_widget.scrollToItem(item, QAbstractItemView.ScrollHint.PositionAtTop)
 
+    def on_grid_current_item_changed(self, current, previous):
+        if current is None:
+            return
+        path = current.data(Qt.ItemDataRole.UserRole)
+        if not path:
+            return
+        normalized = os.path.normpath(path)
+        self._grid_current_path = normalized
+        if self.stacked_widget.currentIndex() == 0:
+            try:
+                self.current_index = self.current_file_list.index(normalized)
+            except ValueError:
+                pass
+
     def _find_current_grid_item(self):
         if not hasattr(self, 'list_widget') or self.list_widget.count() <= 0:
             return None
+
+        if self.stacked_widget.currentIndex() == 0:
+            current_item = self.list_widget.currentItem()
+            if current_item is not None:
+                current_path = current_item.data(Qt.ItemDataRole.UserRole)
+                if current_path:
+                    normalized_current = os.path.normpath(current_path)
+                    try:
+                        self.current_index = self.current_file_list.index(normalized_current)
+                    except ValueError:
+                        pass
+                    return current_item
+
+        if self._grid_current_path:
+            normalized_grid_current = os.path.normpath(self._grid_current_path)
+            item = self._grid_items_by_path.get(normalized_grid_current)
+            if item is not None:
+                try:
+                    self.current_index = self.current_file_list.index(normalized_grid_current)
+                except ValueError:
+                    pass
+                return item
+
+        if self._pending_restore_path:
+            normalized_pending = os.path.normpath(self._pending_restore_path)
+            item = self._grid_items_by_path.get(normalized_pending)
+            if item is not None:
+                try:
+                    self.current_index = self.current_file_list.index(normalized_pending)
+                except ValueError:
+                    pass
+                return item
 
         if self.current_image_path:
             normalized = os.path.normpath(self.current_image_path)
@@ -2771,7 +3212,22 @@ class MainWindow(QMainWindow):
         if delta:
             sb = self.list_widget.verticalScrollBar()
             sb.setValue(sb.value() + delta)
+        self.list_widget.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+        self._ensure_grid_item_still_visible(item, top=top)
         self._grid_resize_restore_active = False
+
+    def _ensure_grid_item_still_visible(self, item, top=False):
+        if item is None or self.stacked_widget.currentIndex() != 0:
+            return
+        rect = self.list_widget.visualItemRect(item)
+        viewport_rect = self.list_widget.viewport().rect()
+        if not rect.isValid() or rect.height() <= 0:
+            hint = QAbstractItemView.ScrollHint.PositionAtTop if top else QAbstractItemView.ScrollHint.EnsureVisible
+            self.list_widget.scrollToItem(item, hint)
+            return
+        if rect.bottom() < viewport_rect.top() or rect.top() > viewport_rect.bottom():
+            hint = QAbstractItemView.ScrollHint.PositionAtTop if top else QAbstractItemView.ScrollHint.EnsureVisible
+            self.list_widget.scrollToItem(item, hint)
 
     def ensure_current_grid_item_visible(self, top=True, delay=0):
         def apply_visibility():
@@ -2835,6 +3291,8 @@ class MainWindow(QMainWindow):
                 delta = rect.top() - expected_top
                 if delta:
                     sb.setValue(sb.value() + delta)
+                self.list_widget.scrollToItem(item, QAbstractItemView.ScrollHint.EnsureVisible)
+                self._ensure_grid_item_still_visible(item, top=top)
                 QTimer.singleShot(0, lambda: self._finalize_grid_anchor_adjust(item, expected_top, top))
 
             QTimer.singleShot(0, adjust_anchor)
@@ -2849,7 +3307,7 @@ class MainWindow(QMainWindow):
             return
             
         import time
-        # 如果菜单刚刚（在 200 ms 内）因为失去焦点而关闭，说明这次点击是为了关闭菜单，所以不再重新弹出
+        # If the menu just closed within 200 ms due to focus loss, this click was for closing it, so do not reopen it.
         if time.time() - getattr(self, '_sort_menu_last_hide_time', 0.0) < 0.2:
             return
         
@@ -2931,7 +3389,7 @@ class MainWindow(QMainWindow):
             self.on_thumbnails_load_finished()
 
 
-    # ---------- 加载图片列表 ----------
+    # ---------- Load image list ----------
     def load_images_list(self, file_paths):
         normalized = [os.path.normpath(p) for p in file_paths]
         seen = set()
@@ -3167,7 +3625,7 @@ class MainWindow(QMainWindow):
         except Exception:
             self.stop_detail_animation()
 
-    # ---------- 显示详情 ----------
+    # ---------- Show detail ----------
     def show_image_detail(self, path, keep_view=False):
         if not path or not os.path.exists(path):
             return
@@ -3259,7 +3717,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    # ---------- 回到网格 ----------
+    # ---------- Return to grid ----------
     def show_grid(self):
         self.stop_detail_animation()
         self.image_label.clear()
@@ -3280,14 +3738,13 @@ class MainWindow(QMainWindow):
         self.shortcut_prev.setEnabled(False)
         self.shortcut_next.setEnabled(False)
 
-        self.schedule_grid_restore(80)
-
         self.update_action_states()
         QTimer.singleShot(0, self.update_grid_for_width)
+        self.schedule_grid_restore(120)
 
 
 
-    # ---------- 自适应网格尺寸 ----------
+    # ---------- Adaptive grid sizing ----------
     def update_grid_for_width(self):
         self.update_fab_visibility()
 
@@ -3316,7 +3773,7 @@ class MainWindow(QMainWindow):
             self.schedule_grid_restore(80)
 
 
-    # ---------- 主题 + 元数据解析 ----------
+    # ---------- Theme + metadata parsing ----------
     def get_theme(self):
         return NativeTheme.DARK if self.dark_mode else NativeTheme.LIGHT
 
@@ -3342,6 +3799,9 @@ class MainWindow(QMainWindow):
             def add_param(key: str, value):
                 if value is None:
                     return
+                value = resolve_param_value(value, key)
+                if value is None:
+                    return
                 value_str = str(value).strip()
                 if not value_str:
                     return
@@ -3356,10 +3816,89 @@ class MainWindow(QMainWindow):
                     value_str = str(value).strip()
                     return value_str or None
 
+            def is_node_ref(value):
+                return (
+                    isinstance(value, (list, tuple))
+                    and len(value) >= 2
+                    and str(value[0]) in data
+                    and isinstance(value[1], int)
+                )
+
+            def clean_lora_name(value):
+                if value is None or is_node_ref(value) or isinstance(value, dict):
+                    return ""
+                name = str(value).strip()
+                if not name or re.fullmatch(r"\[['\"][^'\"]+['\"],\s*\d+\]", name):
+                    return ""
+                return name
+
+            def add_lora_info(name, strength_model=None, strength_clip=None, strength=None):
+                name = clean_lora_name(name)
+                if not name:
+                    return
+
+                parts = [name]
+                sm = format_weight(strength_model)
+                sc = format_weight(strength_clip)
+                s = format_weight(strength)
+                if sm is not None:
+                    parts.append(f"model: {sm}")
+                if sc is not None:
+                    parts.append(f"clip: {sc}")
+                if sm is None and sc is None and s is not None:
+                    parts.append(f"strength: {s}")
+
+                lora_line = " | ".join(parts)
+                if lora_line not in seen_loras:
+                    seen_loras.add(lora_line)
+                    lora_infos.append(lora_line)
+
             def get_node(ref):
                 if isinstance(ref, (list, tuple)) and ref:
                     return data.get(str(ref[0]), {}) or {}
                 return {}
+
+            def resolve_param_value(value, target_key=None, visited=None):
+                if value is None or isinstance(value, dict):
+                    return None
+                if not is_node_ref(value):
+                    if isinstance(value, (list, tuple)):
+                        return None
+                    return value
+
+                node_id = str(value[0])
+                if visited is None:
+                    visited = set()
+                if node_id in visited:
+                    return None
+                visited.add(node_id)
+
+                node = data.get(node_id, {}) or {}
+                inputs = node.get('inputs', {}) or {}
+                if not inputs:
+                    return None
+
+                preferred_keys = {
+                    'seed': ('seed', 'noise_seed', 'rand_seed', 'value', 'int', 'integer', 'number'),
+                    'steps': ('steps', 'num_steps', 'value', 'int', 'integer', 'number'),
+                    'cfg': ('cfg', 'cfg_scale', 'guidance', 'guidance_scale', 'value', 'float', 'number'),
+                    'sampler_name': ('sampler_name', 'sampler', 'value', 'text', 'string'),
+                    'scheduler': ('scheduler', 'scheduler_name', 'value', 'text', 'string'),
+                    'denoise': ('denoise', 'denoise_strength', 'value', 'float', 'number'),
+                }
+                for key in preferred_keys.get(target_key, ()):
+                    if key in inputs:
+                        resolved = resolve_param_value(inputs.get(key), target_key, visited)
+                        if resolved is not None:
+                            return resolved
+
+                ctype_lower = str(node.get('class_type', '')).lower()
+                if any(token in ctype_lower for token in ('primitive', 'value', 'number', 'integer', 'float', 'string')):
+                    for candidate in inputs.values():
+                        resolved = resolve_param_value(candidate, target_key, visited)
+                        if resolved is not None:
+                            return resolved
+                return None
 
             def extract_prompt_text(ref, visited=None):
                 if not isinstance(ref, (list, tuple)) or not ref:
@@ -3372,12 +3911,21 @@ class MainWindow(QMainWindow):
                 visited.add(node_id)
 
                 node = data.get(node_id, {}) or {}
+                ctype_lower = str(node.get('class_type', '')).lower()
+                if 'conditioningzeroout' in ctype_lower or (
+                    'conditioning' in ctype_lower and 'zero' in ctype_lower
+                ):
+                    return ""
                 inputs = node.get('inputs', {}) or {}
 
-                for text_key in ('text', 'prompt', 'positive_prompt', 'negative_prompt', 'string'):
+                for text_key in ('populated_text', 'text', 'prompt', 'positive_prompt', 'negative_prompt', 'string', 'value'):
                     value = inputs.get(text_key)
                     if isinstance(value, str) and value.strip():
                         return value.strip()
+                    if isinstance(value, (list, tuple)) and value:
+                        nested_text = extract_prompt_text(value, visited)
+                        if nested_text:
+                            return nested_text
 
                 for ref_key in ('text', 'prompt', 'positive', 'negative', 'conditioning', 'cond', 'clip'):
                     nested = inputs.get(ref_key)
@@ -3393,6 +3941,63 @@ class MainWindow(QMainWindow):
                             return nested_text
 
                 return ""
+
+            def resolve_switch_choice(value):
+                resolved = resolve_param_value(value)
+                if isinstance(resolved, bool):
+                    return resolved
+                if isinstance(resolved, (int, float)):
+                    return bool(resolved)
+                if isinstance(resolved, str):
+                    normalized = resolved.strip().lower()
+                    if normalized in ('true', 'yes', 'on', '1'):
+                        return True
+                    if normalized in ('false', 'no', 'off', '0'):
+                        return False
+                return None
+
+            def collect_active_node_ids():
+                roots = []
+                for node_id, node in data.items():
+                    ctype = re.sub(r'[^a-z0-9]', '', str(node.get('class_type', '')).lower())
+                    if any(token in ctype for token in ('saveimage', 'imagesaver', 'previewimage')):
+                        roots.append(str(node_id))
+
+                if not roots:
+                    for node_id, node in data.items():
+                        ctype = str(node.get('class_type', '')).lower()
+                        if 'ksampler' in ctype or ('sampler' in ctype and ('advanced' in ctype or 'custom' in ctype)):
+                            roots.append(str(node_id))
+
+                active_ids = set()
+                pending = list(roots)
+                while pending:
+                    node_id = pending.pop()
+                    if node_id in active_ids:
+                        continue
+                    node = data.get(node_id, {}) or {}
+                    if not node:
+                        continue
+                    active_ids.add(node_id)
+
+                    inputs = node.get('inputs', {}) or {}
+                    ctype_lower = str(node.get('class_type', '')).lower()
+                    values = list(inputs.values())
+                    if 'switch' in ctype_lower:
+                        control = inputs.get('switch', inputs.get('condition', inputs.get('boolean')))
+                        choice = resolve_switch_choice(control)
+                        if choice is not None:
+                            selected_keys = ('on_true', 'true') if choice else ('on_false', 'false')
+                            values = [control]
+                            values.extend(inputs.get(key) for key in selected_keys if key in inputs)
+
+                    for value in values:
+                        if is_node_ref(value):
+                            pending.append(str(value[0]))
+
+                return active_ids
+
+            active_node_ids = collect_active_node_ids()
 
             # Keep Parameters aligned with the stable main.py: sampler-related fields only.
             alias_map = {
@@ -3412,7 +4017,7 @@ class MainWindow(QMainWindow):
                 'denoise_strength': 'denoise',
             }
 
-            def collect_from_node(node):
+            def collect_from_node(node, node_id=None):
                 nonlocal sampler_node, qwen_pos_candidate, qwen_neg_candidate
                 if not node:
                     return
@@ -3421,7 +4026,7 @@ class MainWindow(QMainWindow):
                 inputs = node.get('inputs', {}) or {}
                 ctype_lower = ctype.lower()
 
-                if 'checkpointloader' in ctype_lower:
+                if 'checkpointloader' in ctype_lower or ('checkpoint' in ctype_lower and 'loader' in ctype_lower):
                     name = inputs.get('ckpt_name') or inputs.get('model_name') or inputs.get('ckpt_path') or ''
                     if name:
                         add_model_line(f"Checkpoint: {name}")
@@ -3431,22 +4036,22 @@ class MainWindow(QMainWindow):
                     if name:
                         add_model_line(f"Diffusion Model: {name}")
 
-                if 'lora' in ctype_lower:
-                    name = inputs.get('lora_name') or inputs.get('model') or inputs.get('name') or ''
-                    sm = format_weight(inputs.get('strength_model', None))
-                    sc = format_weight(inputs.get('strength_clip', None))
-                    parts = []
-                    if name:
-                        parts.append(str(name))
-                    if sm is not None:
-                        parts.append(f"model: {sm}")
-                    if sc is not None:
-                        parts.append(f"clip: {sc}")
-                    if parts:
-                        lora_line = " | ".join(parts)
-                        if lora_line not in seen_loras:
-                            seen_loras.add(lora_line)
-                            lora_infos.append(lora_line)
+                if 'lora' in ctype_lower and (not active_node_ids or str(node_id) in active_node_ids):
+                    for value in inputs.values():
+                        if isinstance(value, dict) and value.get('on') is True:
+                            add_lora_info(
+                                value.get('lora') or value.get('lora_name') or value.get('name'),
+                                value.get('strength_model'),
+                                value.get('strength_clip'),
+                                value.get('strength'),
+                            )
+
+                    add_lora_info(
+                        inputs.get('lora_name') or inputs.get('lora') or inputs.get('name'),
+                        inputs.get('strength_model'),
+                        inputs.get('strength_clip'),
+                        inputs.get('strength'),
+                    )
 
                 if 'qwen' in ctype_lower:
                     p = inputs.get('prompt') or inputs.get('text') or ""
@@ -3472,25 +4077,47 @@ class MainWindow(QMainWindow):
                     if raw_line not in raw_param_candidates:
                         raw_param_candidates.append(raw_line)
 
+            for node_id, node in data.items():
+                collect_from_node(node, node_id)
+
             for _, node in data.items():
-                collect_from_node(node)
+                ctype_lower = str(node.get('class_type', '')).lower()
+                if 'image saver metadata' not in ctype_lower:
+                    continue
+                inputs = node.get('inputs', {}) or {}
+                saver_pos = extract_prompt_text(inputs.get('positive'))
+                saver_neg = extract_prompt_text(inputs.get('negative'))
+                if saver_pos:
+                    pos = saver_pos
+                if saver_neg:
+                    neg = saver_neg
+                break
 
             if sampler_node:
                 sampler_inputs = sampler_node.get('inputs', {}) or {}
-                pos = extract_prompt_text(sampler_inputs.get('positive')) or pos
-                neg = extract_prompt_text(sampler_inputs.get('negative')) or neg
+                if not pos:
+                    pos = extract_prompt_text(sampler_inputs.get('positive')) or pos
+                if not neg:
+                    neg = extract_prompt_text(sampler_inputs.get('negative')) or neg
 
                 for ref_key in ('noise', 'sampler', 'sigmas', 'latent_image', 'model', 'vae', 'guider'):
-                    collect_from_node(get_node(sampler_inputs.get(ref_key)))
+                    ref = sampler_inputs.get(ref_key)
+                    ref_id = str(ref[0]) if is_node_ref(ref) else None
+                    collect_from_node(get_node(ref), ref_id)
 
             clip_texts = []
             titled_pos = ""
             titled_neg = ""
             for _, node in data.items():
                 if 'cliptextencode' in node.get('class_type', '').lower():
-                    prompt_text = (node.get('inputs', {}) or {}).get('text', '')
-                    if isinstance(prompt_text, str) and prompt_text.strip():
-                        prompt_text = prompt_text.strip()
+                    raw_prompt_text = (node.get('inputs', {}) or {}).get('text', '')
+                    prompt_text = ""
+                    if isinstance(raw_prompt_text, str) and raw_prompt_text.strip():
+                        prompt_text = raw_prompt_text.strip()
+                    elif isinstance(raw_prompt_text, (list, tuple)) and raw_prompt_text:
+                        prompt_text = extract_prompt_text(raw_prompt_text)
+
+                    if prompt_text:
                         clip_texts.append(prompt_text)
                         title = ((node.get('_meta') or {}).get('title') or '').lower()
                         if 'positive' in title and not titled_pos:
@@ -3562,6 +4189,9 @@ class MainWindow(QMainWindow):
 
         indexed = {str(k).strip().lower(): v for k, v in raw_items if str(v).strip()}
         for key in order:
+            if key == 'size':
+                seen.add(key)
+                continue
             if key in indexed and key not in seen:
                 formatted.append((display_key(key), str(indexed[key])))
                 seen.add(key)
@@ -3570,12 +4200,88 @@ class MainWindow(QMainWindow):
             key_str = str(key).strip()
             lowered = key_str.lower()
             value_str = str(value).strip()
-            if not value_str or lowered in seen:
+            if not value_str or lowered in seen or lowered in ('civitai resources', 'lora hashes', 'size'):
                 continue
             formatted.append((display_key(key_str), value_str))
             seen.add(lowered)
 
         return formatted
+
+    def extract_civitai_resources(self, text: str):
+        if not text:
+            return [], text
+
+        marker = "civitai resources:"
+        lower = text.lower()
+        idx = lower.find(marker)
+        if idx == -1:
+            return [], text
+
+        value_start = idx + len(marker)
+        while value_start < len(text) and text[value_start].isspace():
+            value_start += 1
+
+        if value_start >= len(text) or text[value_start] != '[':
+            return [], text
+
+        depth = 0
+        in_string = False
+        escape = False
+        value_end = value_start
+        for pos in range(value_start, len(text)):
+            ch = text[pos]
+            if in_string:
+                if escape:
+                    escape = False
+                elif ch == '\\':
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+            elif ch == '[':
+                depth += 1
+            elif ch == ']':
+                depth -= 1
+                if depth == 0:
+                    value_end = pos + 1
+                    break
+
+        if value_end <= value_start:
+            return [], text
+
+        raw_json = text[value_start:value_end]
+        model_lines = []
+        try:
+            resources = json.loads(raw_json)
+            if isinstance(resources, list):
+                for item in resources:
+                    if not isinstance(item, dict):
+                        continue
+                    air = str(item.get('air') or '').lower()
+                    if 'checkpoint' not in air and item.get('type') not in ('checkpoint', 'Checkpoint'):
+                        continue
+                    model_name = str(item.get('modelName') or '').strip()
+                    version_name = str(item.get('versionName') or '').strip()
+                    if model_name and version_name and model_name != version_name:
+                        line = f"Civitai: {model_name} / {version_name}"
+                    else:
+                        line = f"Civitai: {model_name or version_name}"
+                    if line.strip() != "Civitai:" and line not in model_lines:
+                        model_lines.append(line)
+        except Exception:
+            model_lines = []
+
+        remove_start = idx
+        while remove_start > 0 and text[remove_start - 1] in ' ,':
+            remove_start -= 1
+        remove_end = value_end
+        while remove_end < len(text) and text[remove_end] in ' ,':
+            remove_end += 1
+        cleaned = (text[:remove_start].rstrip(' ,') + ', ' + text[remove_end:].lstrip(' ,')).strip(' ,')
+        return model_lines, cleaned
 
     def parse_parameter_pairs(self, text: str):
         if not text:
@@ -3718,24 +4424,31 @@ class MainWindow(QMainWindow):
             lora_list = []
             params_display = full_params
             if full_params:
-                lower = full_params.lower()
+                civitai_model_lines, params_display = self.extract_civitai_resources(params_display)
+                if civitai_model_lines:
+                    if model_name:
+                        civitai_model_lines = [line for line in civitai_model_lines if model_name not in line]
+                    model_resource_lines = civitai_model_lines
+                else:
+                    model_resource_lines = []
+
+                lower = params_display.lower()
                 idx = lower.find("lora:")
                 if idx != -1:
                     cut_start = idx + len("lora:")
-                    lora_part = full_params[cut_start:].strip(" ,")
+                    lora_part = params_display[cut_start:].strip(" ,")
                     lora_items = [s.strip() for s in lora_part.split(",") if s.strip()]
                     if lora_items:
                         lora_list = lora_items
-                    params_display = full_params[:idx].rstrip(" ,")
+                    params_display = params_display[:idx].rstrip(" ,")
+            else:
+                model_resource_lines = []
 
             param_pairs = self.parse_parameter_pairs(params_display)
             if params_display.strip() and not param_pairs:
                 param_pairs = [('Details', params_display.strip())]
-            if not any(str(key).strip().lower() == 'size' for key, _ in param_pairs):
-                param_pairs.append(('Size', f'{w} x {h}'))
-
             metadata.update({
-                'models': [model_name] if model_name else [],
+                'models': ([model_name] if model_name else []) + model_resource_lines,
                 'loras': lora_list,
                 'positive': pos,
                 'negative': neg,
@@ -3876,6 +4589,7 @@ class MainWindow(QMainWindow):
         """)
         self.metadata_panel.apply_theme(t, self.dark_mode)
         self.apply_fab_style()
+        self.update_detail_nav_button_style()
 
 
 
@@ -3932,7 +4646,7 @@ if __name__ == "__main__":
     from PyQt6.QtCore import qInstallMessageHandler, QtMsgType
 
     def qt_message_handler(mode, context, message):
-        # 彻底不显示这行警告
+        # Suppress this warning completely.
         if "QFont::setPointSize: Point size <= 0 (-1)" in message:
             return
         if mode != QtMsgType.QtDebugMsg:
@@ -3951,7 +4665,7 @@ if __name__ == "__main__":
     font.setFamily("Segoe UI")
     app.setFont(font)
 
-    # 如果你有 app.ico，可以顺便让运行时窗口也用同一个图标
+    # If app.ico is available, use it for the runtime window as well.
     def resource_path(relative_path: str) -> str:
         if hasattr(sys, "_MEIPASS"):
             return os.path.join(sys._MEIPASS, relative_path)

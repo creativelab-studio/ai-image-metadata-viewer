@@ -1,8 +1,14 @@
 __pycache__/
+*.pyc
 *.spec
 dist/
 build/
+release/
 .venv/
 .idea/
 .vscode/
-*.pyc
+*.exe
+*.msi
+*.zip
+*.7z
+*.rar
