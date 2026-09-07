@@ -5,6 +5,8 @@ A lightweight desktop viewer for metadata embedded in AI-generated images
 
 Runs fully offline. No telemetry. No internet connection required.
 
+![AI Image Metadata Viewer](screenshots/hero-banner.png)
+
 ---
 
 ## Screenshots
